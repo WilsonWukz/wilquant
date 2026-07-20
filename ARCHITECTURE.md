@@ -104,8 +104,36 @@ Windows启动脚本直接保存Uvicorn Python进程和Vite Node进程的PID。�
 
 项目脚本只使用项目级虚拟环境和本地依赖，不修改系统执行策略或全局环境。开发进程的 PID 保存在项目内，停止脚本校验进程后只终止本项目进程。
 
-当前仓库位于 OneDrive 同步目录。SQLite、DuckDB 和 Parquet 运行文件默认不提交，并允许通过配置将运行目录迁移到非同步本地磁盘，以降低同步引起的文件锁和原子写入风险。
+当前主项目位于非 OneDrive 目录。SQLite、DuckDB 和 Parquet 运行文件默认不提交；其他部署若位于 OneDrive 等同步目录，可通过配置把运行数据放到非同步本地磁盘，以降低文件锁和原子写入风险。配置变化不会自动移动或删除旧运行文件。
 
 ## 设计记录
 
 Phase 0–1 的完整决策、表规划、阶段顺序和风险分析见 `docs/superpowers/specs/2026-07-20-phase-0-1-foundation-design.md`。
+
+## Phase 2A 数据基础
+
+Phase 2A 的导入链路独立于任何交易运行时：
+
+```text
+Browser upload
+    ↓ controlled staging + SHA-256
+MarketDataProvider (CSV / Parquet / Synthetic)
+    ↓ raw rows + explicit column mapping
+Normalization
+    ↓ typed InstrumentId + Bar
+Data Quality Validation
+    ├── SQLite: source, batch, issue and instrument metadata
+    └── Preview response: accepted samples and issue summary
+
+Future publish step
+    ↓
+Partitioned Parquet
+    ↓
+DuckDB analytical views
+```
+
+SQLite 是导入控制面的事实来源，但不保存逐根 K 线。行情数据发布后使用分区 Parquet，DuckDB 只负责分析查询；三者通过稳定的批次 ID、标的 ID 和未来的数据版本关联。上传暂存区不是长期数据仓库，Phase 2A 不删除或覆盖用户源文件，也不自动发布有问题的数据。
+
+`QUANT_LAB_RUNTIME_ROOT` 为 SQLite、DuckDB、日志、PID 和上传暂存区提供统一的非同步运行根目录。所有 Provider 都必须通过相同的规范化与质量管道，不能直接写交易状态或绕过质量检查。
+
+vn.py 目前只是未安装、未验证的候选基础设施，不是已选定的唯一交易运行时，也未获准进入 Phase V1。若未来明确选择 vn.py，[ADR-0001](docs/ADR-0001-vnpy-runtime-boundary.md) 已批准它必须在独立本地进程运行；FastAPI 仍拥有业务领域、数据管理、策略版本、风险审批、审计、复盘和 Web API。直接 QMT/XtQuant 或其他官方能力的独立 Adapter 仍是可选方案。无论采用何种运行时，都只能作为新的 `MarketDataProvider` 或 Broker Runtime 接入，不能成为历史存储和质量管道的唯一来源。Phase 2B、Phase 2C 的数据工作优先级不变，当前系统仍只有 RESEARCH 模式。

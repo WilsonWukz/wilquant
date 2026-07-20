@@ -2,7 +2,7 @@
 
 个人 A 股量化研究与交易终端的本地开发项目。它用于提出量化假设、检查数据、验证回测、限制风险和记录决策，不是券商交易软件，也不承诺任何收益。
 
-当前仓库只完成 **Phase 0（设计）和 Phase 1（基础骨架）**。
+当前仓库已完成 **Phase 0（设计）、Phase 1（基础骨架）和 Phase 2A（数据基础）**。
 
 ## Phase 1 已实现
 
@@ -17,17 +17,29 @@
 - 前端 Vitest 和生产构建；
 - Windows 本地依赖、启动、测试和安全停止脚本。
 
+## Phase 2A 已实现
+
+- 受控 CSV/Parquet 上传暂存区，带扩展名、大小和 SHA-256 校验；
+- 独立 `MarketDataProvider` 边界及 CSV、Parquet、合成数据 Provider；
+- A 股标的、交易所、频率和复权口径的领域类型与规范化；
+- OHLCV、成交额、重复、顺序、空文件和异常跳变的数据质量检查；
+- 重复 preview 的事务性幂等持久化与数据库唯一约束；
+- SQLite 导入批次、数据源、标的和质量问题元数据；
+- Parquet 行情文件与 DuckDB 分析查询的独立数据平面边界；
+- `/api/v1/data/imports` 检查、预览、批次和质量问题 API；
+- `/data/import` 中文导入检查页，不包含发布、交易或券商连接能力。
+
 ## 当前限制
 
-Phase 1 明确不包含：
+当前版本明确不包含：
 
-- 行情导入、行情下载、K 线或真实数据源；
+- 在线行情下载或真实数据源客户端；
 - 策略定义、信号、回测或绩效指标；
 - OrderIntent、风险引擎、模拟成交或持仓；
 - AI 辅助功能；
 - QMT、XtQuant、券商账户或任何实盘能力。
 
-数据导入将在 Phase 2 实现。当前系统状态页只验证基础设施，不提供交易功能。
+Phase 2A 只提供本地文件的检查与预览；尚未发布规范化行情 Parquet，也不提供交易功能。
 
 ## 环境要求
 
@@ -60,7 +72,7 @@ $env:QUANT_LAB_PROJECT_ROOT = (Get-Location).Path
 .\.venv\Scripts\alembic.exe -c backend/alembic.ini upgrade head
 ```
 
-命令创建本地 SQLite 文件 `data/quant_lab.db` 和最小的 `app_metadata` 表。重复执行 `upgrade head` 是安全的。
+命令创建本地 SQLite 文件 `data/quant_lab.db`、`app_metadata` 及 Phase 2A 的标的、数据源、导入批次和质量问题表。重复执行 `upgrade head` 是安全的。
 
 DuckDB 文件在首次就绪检查时创建为 `data/analytics.duckdb`。当前不写入任何行情数据。
 
@@ -165,14 +177,33 @@ QUANT_LAB_RUN_MODE=RESEARCH
 QUANT_LAB_API_HOST=127.0.0.1
 QUANT_LAB_API_PORT=8000
 QUANT_LAB_FRONTEND_ORIGINS=["http://127.0.0.1:5173","http://localhost:5173"]
+QUANT_LAB_RUNTIME_ROOT=
 QUANT_LAB_SQLITE_PATH=data/quant_lab.db
 QUANT_LAB_DUCKDB_PATH=data/analytics.duckdb
 QUANT_LAB_LOG_PATH=logs/quant-lab.jsonl
 QUANT_LAB_RUN_DIRECTORY=.run
+QUANT_LAB_IMPORT_DIRECTORY=imports/staging
+QUANT_LAB_IMPORT_MAX_BYTES=20971520
+QUANT_LAB_IMPORT_PREVIEW_ROWS=100
 QUANT_LAB_LOG_LEVEL=INFO
 ```
 
-相对路径以 `QUANT_LAB_PROJECT_ROOT` 为基准。若项目位于 OneDrive 等同步目录，建议将 SQLite、DuckDB 和日志路径配置到不参与同步的本地目录，避免同步工具干扰文件锁和原子写入。
+设置 `QUANT_LAB_RUNTIME_ROOT` 后，SQLite、DuckDB、日志、PID 和上传暂存区的相对路径都以该目录为基准；若该变量本身是相对路径，则它稳定地相对于项目根目录解析，与启动终端的当前目录无关。留空时仍以 `QUANT_LAB_PROJECT_ROOT` 为基准。当前主项目位于非 OneDrive 目录；若其他部署位于 OneDrive 等同步目录，建议将运行根目录设为不参与同步的位置（例如 `F:\\WIL_QUANT_RUNTIME` 或 `D:\\WIL_QUANT_RUNTIME`），避免同步工具干扰文件锁和原子写入。配置切换不会自动移动、删除或迁移旧运行文件，测试 fixtures 仍保留在仓库中。
+
+## 数据导入与质量检查
+
+打开 <http://127.0.0.1:5173/data/import> 可上传 `.csv` 或 `.parquet` 文件。后端先将请求流写入受控暂存区，再计算哈希并解析列；用户确认列映射后执行规范化与质量检查，并返回可接受样本和问题摘要。原始上传不会被改写，Phase 2A 也不会自动发布行情文件。
+
+CSV 需要显式映射 `symbol`、`exchange`、`trade_date`、`open`、`high`、`low`、`close`、`volume` 和 `amount`。常见中英文列名会被自动建议；含义不明确的列必须显式映射。当前日线时间统一为北京时间收盘时刻，标的代码按沪深交易所规则规范化。
+
+接口：
+
+- `POST /api/v1/data/imports/inspect?filename=...`：流式暂存并检查文件；
+- `POST /api/v1/data/imports/preview`：按列映射规范化和校验；
+- `GET /api/v1/data/imports/{batch_id}`：查询批次状态和摘要；
+- `GET /api/v1/data/imports/{batch_id}/issues`：查询结构化质量问题。
+
+Phase 2A 的已知边界是仅做检查和预览，尚未把接受行发布为分区 Parquet，也未建立 DuckDB 视图；CSV 编码限定为 UTF-8/UTF-8 BOM，Parquet 解析依赖项目已有的 DuckDB。
 
 ## 运行模式与安全边界
 
