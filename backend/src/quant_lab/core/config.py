@@ -6,6 +6,7 @@ from typing import Self
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy import URL
 
 
 class RunMode(StrEnum):
@@ -74,3 +75,11 @@ class Settings(BaseSettings):
         }
         for directory in directories:
             directory.mkdir(parents=True, exist_ok=True)
+
+    @property
+    def sqlite_url(self) -> str:
+        """Return a SQLAlchemy URL without string-concatenating a filesystem path."""
+
+        return URL.create("sqlite+pysqlite", database=str(self.sqlite_path)).render_as_string(
+            hide_password=False
+        )
