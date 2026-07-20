@@ -2,8 +2,18 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 $script:ProjectRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
-$script:RunDirectory = Join-Path $script:ProjectRoot '.run'
-$script:LogDirectory = Join-Path $script:ProjectRoot 'logs'
+$runtimeRootValue = $env:QUANT_LAB_RUNTIME_ROOT
+if ([string]::IsNullOrWhiteSpace($runtimeRootValue)) {
+    $script:RuntimeRoot = $script:ProjectRoot
+} elseif ([System.IO.Path]::IsPathRooted($runtimeRootValue)) {
+    $script:RuntimeRoot = [System.IO.Path]::GetFullPath($runtimeRootValue)
+} else {
+    $script:RuntimeRoot = [System.IO.Path]::GetFullPath(
+        (Join-Path $script:ProjectRoot $runtimeRootValue)
+    )
+}
+$script:RunDirectory = Join-Path $script:RuntimeRoot '.run'
+$script:LogDirectory = Join-Path $script:RuntimeRoot 'logs'
 
 function Assert-ProjectCommand {
     param([Parameter(Mandatory)][string]$Name)

@@ -9,12 +9,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import Engine
 
 from quant_lab import __version__
+from quant_lab.api.data_imports import router as data_imports_router
 from quant_lab.api.health import router as health_router
 from quant_lab.core.config import Settings
 from quant_lab.core.logging import configure_logging
 from quant_lab.db.duckdb import DuckDbStore
 from quant_lab.db.sqlite import create_sqlite_engine
 from quant_lab.health.service import HealthService
+from quant_lab.market_data.repository import MarketDataRepository
+from quant_lab.market_data.service import MarketDataImportService
 
 logger = logging.getLogger(__name__)
 
@@ -33,8 +36,15 @@ def create_app(
         nonlocal owned_engine
         resolved_settings.ensure_runtime_directories()
         configure_logging(resolved_settings.log_level, resolved_settings.log_path)
+        owned_engine = create_sqlite_engine(resolved_settings)
+        repository = MarketDataRepository(owned_engine)
+        app.state.market_data_repository = repository
+        app.state.import_service = MarketDataImportService(
+            repository,
+            resolved_settings.import_directory,
+            resolved_settings.import_preview_rows,
+        )
         if health_service is None:
-            owned_engine = create_sqlite_engine(resolved_settings)
             app.state.health_service = HealthService(
                 owned_engine,
                 DuckDbStore(resolved_settings.duckdb_path),
@@ -60,10 +70,11 @@ def create_app(
         CORSMiddleware,
         allow_origins=resolved_settings.frontend_origins,
         allow_credentials=False,
-        allow_methods=["GET"],
+        allow_methods=["GET", "POST"],
         allow_headers=["Accept", "Content-Type"],
     )
     application.include_router(health_router, prefix="/api/v1")
+    application.include_router(data_imports_router, prefix="/api/v1")
     return application
 
 

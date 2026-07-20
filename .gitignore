@@ -14,9 +14,11 @@ htmlcov/
 *.db-wal
 *.duckdb
 *.duckdb.wal
+*.duckdb.tmp
 data/raw/
 data/normalized/
 data/parquet/
+imports/staging/
 logs/
 .run/
 frontend/node_modules/
