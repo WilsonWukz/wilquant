@@ -84,6 +84,22 @@ Phase 1 仅实现：
 
 Phase 1 不实现行情、策略、回测、订单、模拟交易、AI 或 QMT 业务代码。
 
+### 已实现的 Phase 1 请求链路
+
+```text
+React SystemStatusPage
+    ↓ GET /api/v1/health/ready
+FastAPI health router
+    ↓
+HealthService
+    ├── SQLAlchemy SQLite SELECT 1
+    └── DuckDB SELECT 1
+```
+
+后端采用 `backend/src/quant_lab` 包布局。应用模块导入不会创建数据库；SQLite引擎和DuckDB探针在FastAPI生命周期内初始化。`/api/v1/health/live`不依赖数据库，`/api/v1/health/ready`在任一依赖失败时返回脱敏的HTTP 503。
+
+Windows启动脚本直接保存Uvicorn Python进程和Vite Node进程的PID。停止脚本同时核验仓库路径与服务标识，无法确认归属时拒绝停止。
+
 ## Windows 与本地数据
 
 项目脚本只使用项目级虚拟环境和本地依赖，不修改系统执行策略或全局环境。开发进程的 PID 保存在项目内，停止脚本校验进程后只终止本项目进程。
