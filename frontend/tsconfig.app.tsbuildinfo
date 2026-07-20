@@ -1,1 +1,0 @@
-{"root":["./src/app.tsx","./src/main.tsx","./src/components/statuscard.tsx","./src/pages/systemstatuspage.test.tsx","./src/pages/systemstatuspage.tsx","./src/services/health.test.ts","./src/services/health.ts","./src/test/setup.ts","./src/types/health.ts"],"version":"5.9.3"}
