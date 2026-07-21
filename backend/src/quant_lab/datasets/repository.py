@@ -20,6 +20,7 @@ from quant_lab.datasets.domain import DatasetVersionStatus
 from quant_lab.datasets.errors import DatasetError
 from quant_lab.datasets.persistence import (
     DatasetModel,
+    DatasetFileModel,
     DatasetVersionModel,
     PublicationAuditModel,
 )
@@ -522,6 +523,83 @@ class DatasetRepository:
                 "PUBLICATION_DATASET_MISMATCH",
                 "数据集身份与发布配置不一致",
             )
+
+    def mark_files_committing(self, version_id: str) -> None:
+        with Session(self._engine) as session:
+            version = session.get(DatasetVersionModel, version_id)
+            if version is None:
+                raise DatasetError("DATASET_VERSION_NOT_FOUND", "version not found")
+            version.status = DatasetVersionStatus.FILES_COMMITTING.value
+            session.commit()
+
+    def mark_files_committed(self, version_id: str) -> None:
+        with Session(self._engine) as session:
+            version = session.get(DatasetVersionModel, version_id)
+            if version is None:
+                raise DatasetError("DATASET_VERSION_NOT_FOUND", "version not found")
+            version.status = DatasetVersionStatus.FILES_COMMITTED.value
+            session.commit()
+
+    def finalize_publication(self, *, version_id: str, batch_id: str, dataset_id: str,
+                             files: list[dict[str, object]], relative_root: str,
+                             manifest_path: str, manifest_sha256: str, row_count: int,
+                             instrument_count: int, min_timestamp: datetime | None,
+                             max_timestamp: datetime | None, partition_count: int,
+                             total_size_bytes: int, quality_issue_count: int,
+                             warning_count: int, blocking_issue_count: int,
+                             quality_summary_json: str, request_id: str,
+                             publication_fingerprint: str, config_json: str,
+                             confirm_warnings: bool, claimed_at: datetime) -> DatasetVersionModel:
+        now = datetime.now(UTC)
+        with Session(self._engine) as session:
+            version = session.get(DatasetVersionModel, version_id)
+            batch = session.get(ImportBatchModel, batch_id)
+            if version is None or batch is None:
+                raise DatasetError("PUBLICATION_STATE_NOT_FOUND", "publication state not found")
+            if version.status == DatasetVersionStatus.PUBLISHED.value:
+                return version
+            if version.status != DatasetVersionStatus.FILES_COMMITTED.value:
+                raise DatasetError("PUBLICATION_STATE_INVALID", "files not committed")
+            for item in files:
+                session.add(DatasetFileModel(dataset_file_id=str(uuid4()), dataset_version_id=version_id, **item))
+            version.status = DatasetVersionStatus.PUBLISHED.value
+            version.relative_version_root = relative_root
+            version.manifest_path = manifest_path
+            version.manifest_sha256 = manifest_sha256
+            version.row_count = row_count; version.instrument_count = instrument_count
+            version.min_timestamp = min_timestamp; version.max_timestamp = max_timestamp
+            version.partition_count = partition_count; version.file_count = len(files)
+            version.total_size_bytes = total_size_bytes
+            version.quality_issue_count = quality_issue_count; version.warning_count = warning_count
+            version.blocking_issue_count = blocking_issue_count
+            version.quality_summary_json = quality_summary_json; version.published_at = now
+            batch.status = ImportBatchStatus.PUBLISHED.value
+            session.add(PublicationAuditModel(publication_audit_id=str(uuid4()), request_id=request_id,
+                actor_type="LOCAL_UNAUTHENTICATED_USER", batch_id=batch_id, dataset_id=dataset_id,
+                dataset_version_id=version_id, expected_preview_fingerprint=version.source_preview_fingerprint,
+                actual_preview_fingerprint=version.source_preview_fingerprint,
+                publication_fingerprint=publication_fingerprint, publication_config_json=config_json,
+                confirm_warnings=confirm_warnings, result="PUBLISHED", manifest_sha256=manifest_sha256,
+                file_count=len(files), row_count=row_count, idempotent_replay=False, created_at=claimed_at))
+            session.commit(); session.refresh(version); _restore_version_datetimes(version); session.expunge(version)
+            return version
+
+    def mark_publication_failed(self, *, version_id: str, batch_id: str, code: str, reason: str,
+                                request_id: str, config_json: str, confirm_warnings: bool) -> None:
+        now = datetime.now(UTC)
+        with Session(self._engine) as session:
+            version = session.get(DatasetVersionModel, version_id); batch = session.get(ImportBatchModel, batch_id)
+            if version is None or batch is None or version.status == DatasetVersionStatus.PUBLISHED.value:
+                return
+            version.status = DatasetVersionStatus.FAILED.value; version.failure_code = code; version.failure_reason = reason
+            batch.status = ImportBatchStatus.PUBLISH_FAILED.value
+            session.add(PublicationAuditModel(publication_audit_id=str(uuid4()), request_id=request_id,
+                actor_type="LOCAL_UNAUTHENTICATED_USER", batch_id=batch_id, dataset_id=version.dataset_id,
+                dataset_version_id=version_id, expected_preview_fingerprint=version.source_preview_fingerprint,
+                actual_preview_fingerprint=None, publication_fingerprint=version.publication_fingerprint,
+                publication_config_json=config_json, confirm_warnings=confirm_warnings, result="FAILED",
+                failure_code=code, failure_reason=reason, created_at=now))
+            session.commit()
 
     def _require_dataset(self, dataset_id: str) -> None:
         with Session(self._engine) as session:

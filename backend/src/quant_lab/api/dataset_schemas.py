@@ -79,6 +79,18 @@ class DatasetVersionResponse(BaseModel):
 class DatasetVersionListResponse(BaseModel):
     items: tuple[DatasetVersionResponse, ...]
 
+class DatasetPublishRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    dataset_id: str
+    import_batch_id: str
+    expected_preview_fingerprint: str
+    frequency: str = "DAILY"
+    adjustment_type: str = "NONE"
+    confirm_publish: bool = True
+    confirm_warnings: bool = False
+    operator_label: str | None = None
+    request_note: str | None = None
+
 
 class DatasetErrorResponse(BaseModel):
     error_code: str

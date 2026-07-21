@@ -13,17 +13,23 @@ from quant_lab.api.dataset_schemas import (
     DatasetResponse,
     DatasetVersionListResponse,
     DatasetVersionResponse,
+    DatasetPublishRequest,
 )
 from quant_lab.datasets.errors import DatasetError
 from quant_lab.datasets.repository import DatasetIdentity, DatasetRepository
+from quant_lab.datasets.publication import PublicationService
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
+publish_router = APIRouter(prefix="/data-batches", tags=["datasets"])
 logger = logging.getLogger(__name__)
 
 
 def _repository(request: Request) -> DatasetRepository:
     repository: DatasetRepository = request.app.state.dataset_repository
     return repository
+
+def _publication(request: Request) -> PublicationService:
+    return request.app.state.publication_service
 
 
 def _error(error: DatasetError, request_id: str) -> JSONResponse:
@@ -132,6 +138,24 @@ def get_dataset_version(request: Request, dataset_id: str, version_id: str):
         return DatasetVersionResponse.model_validate(
             _repository(request).get_version(dataset_id, version_id)
         )
+    except DatasetError as error:
+        return _error(error, request_id)
+    except Exception as error:
+        return _server_error(error, request_id)
+
+@publish_router.post("/{batch_id}/publish")
+def publish_batch(request: Request, batch_id: str, payload: DatasetPublishRequest):
+    request_id = str(uuid4())
+    if payload.import_batch_id != batch_id:
+        return JSONResponse(status_code=400, content={"error_code":"BATCH_ID_MISMATCH","message":"import batch mismatch","request_id":request_id})
+    if not payload.confirm_publish:
+        return JSONResponse(status_code=400, content={"error_code":"PUBLISH_CONFIRMATION_REQUIRED","message":"publish confirmation required","request_id":request_id})
+    try:
+        version = _publication(request).publish(dataset_id=payload.dataset_id, batch_id=batch_id,
+            expected_preview_fingerprint=payload.expected_preview_fingerprint, confirm_warnings=payload.confirm_warnings,
+            request_id=request_id, frequency=payload.frequency, adjustment_type=payload.adjustment_type,
+            operator_label=payload.operator_label, request_note=payload.request_note)
+        return DatasetVersionResponse.model_validate(version)
     except DatasetError as error:
         return _error(error, request_id)
     except Exception as error:

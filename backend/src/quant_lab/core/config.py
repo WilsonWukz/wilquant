@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     log_path: Path = Path("logs/quant-lab.jsonl")
     run_directory: Path = Path(".run")
     import_directory: Path = Path("imports/staging")
+    publication_staging_directory: Path = Path("data/publication-staging")
+    published_directory: Path = Path("data/published")
     import_max_bytes: int = Field(default=20 * 1024 * 1024, ge=1)
     import_preview_rows: int = Field(default=100, ge=1, le=1000)
     log_level: str = "INFO"
@@ -80,6 +82,8 @@ class Settings(BaseSettings):
             "log_path",
             "run_directory",
             "import_directory",
+            "publication_staging_directory",
+            "published_directory",
         ):
             path = getattr(self, field_name).expanduser()
             if not path.is_absolute():
@@ -96,6 +100,8 @@ class Settings(BaseSettings):
             self.log_path.parent,
             self.run_directory,
             self.import_directory,
+            self.publication_staging_directory,
+            self.published_directory,
         }
         for directory in directories:
             directory.mkdir(parents=True, exist_ok=True)
