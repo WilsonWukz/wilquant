@@ -9,13 +9,22 @@ from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import uuid4
 
-from sqlalchemy import Engine, select
+from sqlalchemy import Engine, func, select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import CursorResult
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from quant_lab.datasets.domain import DatasetVersionStatus
 from quant_lab.datasets.errors import DatasetError
-from quant_lab.datasets.persistence import DatasetModel, DatasetVersionModel
+from quant_lab.datasets.persistence import (
+    DatasetModel,
+    DatasetVersionModel,
+    PublicationAuditModel,
+)
+from quant_lab.market_data.domain import ImportBatchStatus
+from quant_lab.market_data.fingerprints import canonical_json_bytes
+from quant_lab.market_data.persistence import DataQualityIssueModel, ImportBatchModel
 
 _LOGICAL_KEY_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._:-]{0,254}$")
 _IDENTITY_FIELDS = (
@@ -42,6 +51,51 @@ class DatasetIdentity:
 class DatasetCreateResult:
     dataset: DatasetModel
     created: bool
+
+
+@dataclass(frozen=True, slots=True)
+class PublicationConfig:
+    frequency: str
+    adjustment_type: str
+    schema_version: str
+    publication_format_version: str
+    partition_strategy_version: str
+    compression_version: str
+    column_definition_version: str
+
+
+@dataclass(frozen=True, slots=True)
+class PublicationClaimResult:
+    version: DatasetVersionModel
+    created: bool
+    idempotent_replay: bool
+
+
+def publication_fingerprint_for(
+    *,
+    source_preview_fingerprint: str,
+    dataset_id: str,
+    frequency: str,
+    adjustment_type: str,
+    schema_version: str,
+    publication_format_version: str,
+    partition_strategy_version: str,
+    compression_version: str,
+    column_definition_version: str,
+) -> str:
+    payload = {
+        "version": "publication-sha256@1",
+        "source_preview_fingerprint": source_preview_fingerprint,
+        "dataset_id": dataset_id,
+        "frequency": frequency,
+        "adjustment_type": adjustment_type,
+        "schema_version": schema_version,
+        "publication_format_version": publication_format_version,
+        "partition_strategy_version": partition_strategy_version,
+        "compression_version": compression_version,
+        "column_definition_version": column_definition_version,
+    }
+    return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
 
 
 def _normalized_text(value: str, *, uppercase: bool = False) -> str:
@@ -205,6 +259,240 @@ class DatasetRepository:
             )
         if version_id is not None:
             raise DatasetError("DATASET_IDENTITY_IMMUTABLE", "已有版本的数据集身份不可修改")
+
+    def claim_publication(
+        self,
+        *,
+        batch_id: str,
+        dataset_id: str,
+        expected_preview_fingerprint: str,
+        publication_config: PublicationConfig,
+        confirm_warnings: bool,
+        request_id: str,
+        operator_label: str | None = None,
+        request_note: str | None = None,
+        claimed_at: datetime | None = None,
+    ) -> PublicationClaimResult:
+        claim_time = claimed_at or datetime.now(UTC)
+        fingerprint: str | None = None
+        connection = self._engine.connect()
+        try:
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
+            session = Session(bind=connection, expire_on_commit=False)
+            try:
+                dataset = session.get(DatasetModel, dataset_id)
+                if dataset is None or not dataset.is_active:
+                    raise DatasetError("DATASET_NOT_FOUND", "数据集不存在")
+                batch = session.get(ImportBatchModel, batch_id)
+                if batch is None:
+                    raise DatasetError("BATCH_NOT_FOUND", "导入批次不存在")
+
+                fingerprint = publication_fingerprint_for(
+                    source_preview_fingerprint=expected_preview_fingerprint,
+                    dataset_id=dataset_id,
+                    frequency=publication_config.frequency,
+                    adjustment_type=publication_config.adjustment_type,
+                    schema_version=publication_config.schema_version,
+                    publication_format_version=publication_config.publication_format_version,
+                    partition_strategy_version=publication_config.partition_strategy_version,
+                    compression_version=publication_config.compression_version,
+                    column_definition_version=publication_config.column_definition_version,
+                )
+                existing = session.scalar(
+                    select(DatasetVersionModel).where(
+                        DatasetVersionModel.publication_fingerprint == fingerprint
+                    )
+                )
+                if existing is not None:
+                    _restore_version_datetimes(existing)
+                    session.expunge(existing)
+                    connection.commit()
+                    return PublicationClaimResult(
+                        version=existing,
+                        created=False,
+                        idempotent_replay=True,
+                    )
+
+                self._validate_publication_claim(
+                    session,
+                    dataset=dataset,
+                    batch=batch,
+                    expected_preview_fingerprint=expected_preview_fingerprint,
+                    publication_config=publication_config,
+                    confirm_warnings=confirm_warnings,
+                )
+                next_version = (
+                    session.scalar(
+                        select(func.max(DatasetVersionModel.version)).where(
+                            DatasetVersionModel.dataset_id == dataset_id
+                        )
+                    )
+                    or 0
+                ) + 1
+                version = DatasetVersionModel(
+                    dataset_version_id=str(uuid4()),
+                    dataset_id=dataset_id,
+                    version=next_version,
+                    status=DatasetVersionStatus.VALIDATING.value,
+                    source_batch_id=batch_id,
+                    source_preview_fingerprint=expected_preview_fingerprint,
+                    publication_fingerprint=fingerprint,
+                    schema_version=publication_config.schema_version,
+                    normalization_version=cast(str, batch.normalization_version),
+                    quality_rules_version=cast(str, batch.quality_rules_version),
+                    publication_format_version=publication_config.publication_format_version,
+                    partition_strategy_version=publication_config.partition_strategy_version,
+                    row_count=0,
+                    instrument_count=0,
+                    partition_count=0,
+                    file_count=0,
+                    total_size_bytes=0,
+                    quality_issue_count=0,
+                    warning_count=batch.warning_count,
+                    blocking_issue_count=0,
+                    publication_claimed_at=claim_time,
+                    created_at=claim_time,
+                )
+                session.add(version)
+                session.flush()
+                batch.status = ImportBatchStatus.PUBLISHING.value
+                session.add(
+                    PublicationAuditModel(
+                        publication_audit_id=str(uuid4()),
+                        request_id=request_id,
+                        actor_type="LOCAL_UNAUTHENTICATED_USER",
+                        operator_label=operator_label,
+                        request_note=request_note,
+                        batch_id=batch_id,
+                        dataset_id=dataset_id,
+                        dataset_version_id=version.dataset_version_id,
+                        expected_preview_fingerprint=expected_preview_fingerprint,
+                        actual_preview_fingerprint=batch.preview_fingerprint,
+                        publication_fingerprint=fingerprint,
+                        publication_config_json=canonical_json_bytes(
+                            {
+                                "frequency": publication_config.frequency,
+                                "adjustment_type": publication_config.adjustment_type,
+                                "schema_version": publication_config.schema_version,
+                                "publication_format_version": (
+                                    publication_config.publication_format_version
+                                ),
+                                "partition_strategy_version": (
+                                    publication_config.partition_strategy_version
+                                ),
+                                "compression_version": publication_config.compression_version,
+                                "column_definition_version": (
+                                    publication_config.column_definition_version
+                                ),
+                            }
+                        ).decode("utf-8"),
+                        confirm_warnings=confirm_warnings,
+                        result="CLAIMED",
+                        file_count=0,
+                        row_count=0,
+                        idempotent_replay=False,
+                        created_at=claim_time,
+                    )
+                )
+                session.flush()
+                connection.commit()
+                _restore_version_datetimes(version)
+                session.expunge(version)
+                return PublicationClaimResult(
+                    version=version,
+                    created=True,
+                    idempotent_replay=False,
+                )
+            except IntegrityError as error:
+                connection.rollback()
+                if fingerprint is not None:
+                    with Session(self._engine) as winner_session:
+                        winner = winner_session.scalar(
+                            select(DatasetVersionModel).where(
+                                DatasetVersionModel.publication_fingerprint == fingerprint
+                            )
+                        )
+                        if winner is not None:
+                            _restore_version_datetimes(winner)
+                            winner_session.expunge(winner)
+                            return PublicationClaimResult(
+                                version=winner,
+                                created=False,
+                                idempotent_replay=True,
+                            )
+                raise DatasetError(
+                    "PUBLICATION_CLAIM_CONFLICT",
+                    "发布声明发生并发冲突, 请重试",
+                ) from error
+            except Exception:
+                connection.rollback()
+                raise
+            finally:
+                session.close()
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _validate_publication_claim(
+        session: Session,
+        *,
+        dataset: DatasetModel,
+        batch: ImportBatchModel,
+        expected_preview_fingerprint: str,
+        publication_config: PublicationConfig,
+        confirm_warnings: bool,
+    ) -> None:
+        if batch.status != ImportBatchStatus.PREVIEW_READY.value:
+            raise DatasetError("PUBLICATION_BATCH_NOT_READY", "当前批次不可发布")
+        preview_fields = (
+            batch.field_mapping_json,
+            batch.provider_version,
+            batch.normalization_version,
+            batch.quality_rules_version,
+            batch.preview_fingerprint_version,
+            batch.preview_fingerprint,
+            batch.preview_completed_at,
+        )
+        if any(value is None or value == "" for value in preview_fields):
+            raise DatasetError(
+                "PUBLICATION_PREVIEW_INCOMPLETE",
+                "预览记录不完整, 请重新预览",
+            )
+        if batch.preview_fingerprint != expected_preview_fingerprint:
+            raise DatasetError(
+                "PREVIEW_FINGERPRINT_MISMATCH",
+                "预览指纹不一致, 请重新预览",
+            )
+        if (
+            dataset.frequency != publication_config.frequency
+            or dataset.adjustment_type != publication_config.adjustment_type
+            or dataset.schema_version != publication_config.schema_version
+            or batch.schema_version != publication_config.schema_version
+        ):
+            raise DatasetError(
+                "PUBLICATION_DATASET_MISMATCH",
+                "数据集身份与发布配置不一致",
+            )
+        if batch.accepted_count <= 0:
+            raise DatasetError("PUBLICATION_PREVIEW_EMPTY", "没有可发布的数据")
+        blocking_issues = session.scalar(
+            select(func.count())
+            .select_from(DataQualityIssueModel)
+            .where(
+                DataQualityIssueModel.batch_id == batch.batch_id,
+                DataQualityIssueModel.severity.in_(("ERROR", "FATAL")),
+            )
+        )
+        if batch.rejected_count > 0 or blocking_issues:
+            raise DatasetError(
+                "PUBLICATION_BLOCKED_BY_QUALITY",
+                "预览存在阻断性质量问题",
+            )
+        if batch.warning_count > 0 and not confirm_warnings:
+            raise DatasetError(
+                "PUBLICATION_WARNINGS_NOT_CONFIRMED",
+                "请先确认质量警告",
+            )
 
     def _require_dataset(self, dataset_id: str) -> None:
         with Session(self._engine) as session:
