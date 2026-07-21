@@ -28,6 +28,18 @@ VALID_CSV = (
     b"600000,XSHG,2026-07-17,10.1,10.8,10.0,10.5,1200,12500.25\n"
     b"000001,XSHE,2026-07-17,10.1,9.0,10.0,10.5,0,0\n"
 )
+CLEAN_CSV = (
+    b"symbol,exchange,trade_date,open,high,low,close,volume,amount\n"
+    b"600000,XSHG,2026-07-17,10.1,10.8,10.0,10.5,1200,12500.25\n"
+)
+WARNING_CSV = (
+    b"symbol,exchange,trade_date,open,high,low,close,volume,amount\n"
+    b"600000,XSHG,2026-07-17,10.1,10.8,10.0,10.5,0,0\n"
+)
+ALL_REJECTED_CSV = (
+    b"symbol,exchange,trade_date,open,high,low,close,volume,amount\n"
+    b"600000,XSHG,2026-07-17,10.1,9.0,10.0,10.5,1200,12500.25\n"
+)
 MAPPING = {
     field: field
     for field in (
@@ -102,7 +114,7 @@ async def test_inspect_preview_and_read_batch(
     assert result["quality_rules_version"] == QUALITY_RULES_VERSION
     assert result["preview_fingerprint_version"] == PREVIEW_FINGERPRINT_VERSION
     assert result["preview_completed_at"].endswith("Z")
-    assert result["publish_eligibility"] == "ELIGIBLE"
+    assert result["publish_eligibility"] == "QUALITY_BLOCKED"
 
     batch = await import_client.get(f"/api/v1/data/imports/{inspected['batch_id']}")
     issues = await import_client.get(
@@ -110,7 +122,7 @@ async def test_inspect_preview_and_read_batch(
     )
     assert batch.json()["status"] == "PREVIEW_READY"
     assert batch.json()["preview_fingerprint"] == result["preview_fingerprint"]
-    assert batch.json()["publish_eligibility"] == "ELIGIBLE"
+    assert batch.json()["publish_eligibility"] == "QUALITY_BLOCKED"
     assert any(item["issue_code"] == "HIGH_BELOW_LOW" for item in issues.json()["items"])
     issue = next(item for item in issues.json()["items"] if item["issue_code"] == "HIGH_BELOW_LOW")
     assert issue["issue_fingerprint_version"] == "quality-issue-sha256@2"
@@ -165,6 +177,74 @@ async def test_repeated_preview_is_idempotent(import_client: AsyncClient) -> Non
     }
     assert first_issues.json() == second_issues.json()
     assert len(second_issues.json()["items"]) == len(first_issues.json()["items"])
+
+
+@pytest.mark.parametrize(
+    ("content", "accepted", "rejected", "warning", "expected"),
+    [
+        (CLEAN_CSV, 1, 0, 0, "ELIGIBLE"),
+        (ALL_REJECTED_CSV, 0, 1, 0, "QUALITY_BLOCKED"),
+        (WARNING_CSV, 1, 0, 1, "WARNING_CONFIRMATION_REQUIRED"),
+    ],
+)
+async def test_preview_and_batch_get_share_quality_eligibility(
+    import_client: AsyncClient,
+    content: bytes,
+    accepted: int,
+    rejected: int,
+    warning: int,
+    expected: str,
+) -> None:
+    inspection = await inspect_csv(import_client, content)
+    batch_id = inspection.json()["batch_id"]
+
+    preview = await import_client.post(
+        "/api/v1/data/imports/preview",
+        json={"batch_id": batch_id, "field_mapping": MAPPING},
+    )
+    batch = await import_client.get(f"/api/v1/data/imports/{batch_id}")
+
+    assert preview.status_code == batch.status_code == 200
+    assert preview.json()["accepted_count"] == accepted
+    assert preview.json()["rejected_count"] == rejected
+    assert preview.json()["warning_count"] == warning
+    assert preview.json()["publish_eligibility"] == expected
+    assert batch.json()["publish_eligibility"] == expected
+
+
+async def test_batch_get_blocks_fatal_issue_even_with_accepted_rows(
+    import_client: AsyncClient,
+    tmp_path: Path,
+) -> None:
+    inspection = await inspect_csv(import_client, CLEAN_CSV)
+    batch_id = inspection.json()["batch_id"]
+    assert (
+        await import_client.post(
+            "/api/v1/data/imports/preview",
+            json={"batch_id": batch_id, "field_mapping": MAPPING},
+        )
+    ).json()["publish_eligibility"] == "ELIGIBLE"
+    settings = Settings(project_root=tmp_path, runtime_root=tmp_path / "runtime")
+    engine = create_sqlite_engine(settings)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO data_quality_issues "
+                "(issue_id, batch_id, row_number, symbol, field_name, severity, "
+                "issue_code, message, raw_value, issue_fingerprint, "
+                "issue_fingerprint_version, normalized_value, created_at) VALUES "
+                "('fatal-api-issue', :batch_id, 2, '600000', 'close', 'FATAL', "
+                "'FATAL_SOURCE', 'fatal', NULL, :fingerprint, "
+                "'quality-issue-sha256@2', NULL, CURRENT_TIMESTAMP)"
+            ),
+            {"batch_id": batch_id, "fingerprint": "f" * 64},
+        )
+    engine.dispose()
+
+    batch = await import_client.get(f"/api/v1/data/imports/{batch_id}")
+
+    assert batch.status_code == 200
+    assert batch.json()["publish_eligibility"] == "QUALITY_BLOCKED"
 
 
 async def test_legacy_preview_ready_batch_requires_a_new_preview(

@@ -24,6 +24,10 @@ from quant_lab.datasets.persistence import (
     PublicationAuditModel,
 )
 from quant_lab.market_data.domain import ImportBatchStatus
+from quant_lab.market_data.eligibility import (
+    PublicationEligibility,
+    persisted_publication_eligibility,
+)
 from quant_lab.market_data.fingerprints import canonical_json_bytes
 from quant_lab.market_data.persistence import DataQualityIssueModel, ImportBatchModel
 
@@ -305,31 +309,30 @@ class DatasetRepository:
                 if batch is None:
                     raise DatasetError("BATCH_NOT_FOUND", "导入批次不存在")
 
-                self._validate_persisted_preview(
-                    batch,
-                    expected_preview_fingerprint=expected_preview_fingerprint,
+                issue_severities = tuple(
+                    session.scalars(
+                        select(DataQualityIssueModel.severity).where(
+                            DataQualityIssueModel.batch_id == batch_id
+                        )
+                    )
                 )
+                eligibility = persisted_publication_eligibility(
+                    batch,
+                    issue_severities=issue_severities,
+                    confirm_warnings=confirm_warnings,
+                )
+                self._require_publication_eligibility(eligibility)
+                if batch.preview_fingerprint != expected_preview_fingerprint:
+                    raise DatasetError(
+                        "PREVIEW_FINGERPRINT_MISMATCH",
+                        "预览指纹不一致, 请重新预览",
+                    )
                 self._validate_publication_identity(
                     dataset,
                     batch,
                     publication_config=publication_config,
                 )
                 is_new_claim = batch.status == ImportBatchStatus.PREVIEW_READY.value
-                if is_new_claim:
-                    self._validate_preview_ready_eligibility(
-                        session,
-                        batch=batch,
-                        confirm_warnings=confirm_warnings,
-                    )
-                elif batch.status not in {
-                    ImportBatchStatus.PUBLISHING.value,
-                    ImportBatchStatus.PUBLISHED.value,
-                    ImportBatchStatus.PUBLISH_FAILED.value,
-                }:
-                    raise DatasetError(
-                        "PUBLICATION_BATCH_NOT_READY",
-                        "当前批次不可发布",
-                    )
 
                 fingerprint = publication_fingerprint_for(
                     source_preview_fingerprint=expected_preview_fingerprint,
@@ -483,29 +486,23 @@ class DatasetRepository:
             connection.close()
 
     @staticmethod
-    def _validate_persisted_preview(
-        batch: ImportBatchModel,
-        *,
-        expected_preview_fingerprint: str,
+    def _require_publication_eligibility(
+        eligibility: PublicationEligibility,
     ) -> None:
-        preview_fields = (
-            batch.field_mapping_json,
-            batch.provider_version,
-            batch.normalization_version,
-            batch.quality_rules_version,
-            batch.preview_fingerprint_version,
-            batch.preview_fingerprint,
-            batch.preview_completed_at,
-        )
-        if any(value is None or value == "" for value in preview_fields):
+        if eligibility is PublicationEligibility.PREVIEW_REQUIRED:
             raise DatasetError(
-                "PUBLICATION_PREVIEW_INCOMPLETE",
+                "PUBLICATION_PREVIEW_REQUIRED",
                 "预览记录不完整, 请重新预览",
             )
-        if batch.preview_fingerprint != expected_preview_fingerprint:
+        if eligibility is PublicationEligibility.QUALITY_BLOCKED:
             raise DatasetError(
-                "PREVIEW_FINGERPRINT_MISMATCH",
-                "预览指纹不一致, 请重新预览",
+                "PUBLICATION_BLOCKED_BY_QUALITY",
+                "预览存在阻断性质量问题",
+            )
+        if eligibility is PublicationEligibility.WARNING_CONFIRMATION_REQUIRED:
+            raise DatasetError(
+                "PUBLICATION_WARNINGS_NOT_CONFIRMED",
+                "请先确认质量警告",
             )
 
     @staticmethod
@@ -524,36 +521,6 @@ class DatasetRepository:
             raise DatasetError(
                 "PUBLICATION_DATASET_MISMATCH",
                 "数据集身份与发布配置不一致",
-            )
-
-    @staticmethod
-    def _validate_preview_ready_eligibility(
-        session: Session,
-        *,
-        batch: ImportBatchModel,
-        confirm_warnings: bool,
-    ) -> None:
-        if batch.status != ImportBatchStatus.PREVIEW_READY.value:
-            raise DatasetError("PUBLICATION_BATCH_NOT_READY", "当前批次不可发布")
-        if batch.accepted_count <= 0:
-            raise DatasetError("PUBLICATION_PREVIEW_EMPTY", "没有可发布的数据")
-        blocking_issues = session.scalar(
-            select(func.count())
-            .select_from(DataQualityIssueModel)
-            .where(
-                DataQualityIssueModel.batch_id == batch.batch_id,
-                DataQualityIssueModel.severity.in_(("ERROR", "FATAL")),
-            )
-        )
-        if batch.rejected_count > 0 or blocking_issues:
-            raise DatasetError(
-                "PUBLICATION_BLOCKED_BY_QUALITY",
-                "预览存在阻断性质量问题",
-            )
-        if batch.warning_count > 0 and not confirm_warnings:
-            raise DatasetError(
-                "PUBLICATION_WARNINGS_NOT_CONFIRMED",
-                "请先确认质量警告",
             )
 
     def _require_dataset(self, dataset_id: str) -> None:

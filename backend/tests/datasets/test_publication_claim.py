@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, replace
@@ -35,6 +36,26 @@ from quant_lab.market_data.persistence import (
 
 NOW = datetime(2026, 7, 21, 9, 0, tzinfo=UTC)
 PREVIEW_FINGERPRINT = "a" * 64
+FIELD_MAPPING = {
+    field: field
+    for field in (
+        "symbol",
+        "exchange",
+        "trade_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "amount",
+    )
+}
+FIELD_MAPPING_JSON = json.dumps(
+    FIELD_MAPPING,
+    ensure_ascii=False,
+    sort_keys=True,
+    separators=(",", ":"),
+)
 
 
 @pytest.fixture
@@ -82,7 +103,7 @@ def insert_preview(
     accepted_count: int = 2,
     rejected_count: int = 0,
     warning_count: int = 0,
-    field_mapping_json: str | None = '{"close":"close","symbol":"symbol"}',
+    field_mapping_json: str | None = FIELD_MAPPING_JSON,
     blocking_issue: bool = False,
 ) -> str:
     source_id = f"source-{suffix}"
@@ -177,6 +198,41 @@ def claim(
     )
 
 
+def persisted_preview_snapshot(engine: Engine, batch_id: str) -> tuple[object, ...]:
+    fields = (
+        "status",
+        "source_file_size",
+        "field_mapping_json",
+        "provider_version",
+        "schema_version",
+        "normalization_version",
+        "quality_rules_version",
+        "preview_fingerprint_version",
+        "preview_fingerprint",
+        "preview_completed_at",
+        "row_count",
+        "accepted_count",
+        "rejected_count",
+        "warning_count",
+    )
+    with Session(engine) as session:
+        batch = session.get(ImportBatchModel, batch_id)
+        assert batch is not None
+        issues = tuple(
+            session.execute(
+                select(
+                    DataQualityIssueModel.issue_id,
+                    DataQualityIssueModel.severity,
+                    DataQualityIssueModel.issue_code,
+                    DataQualityIssueModel.issue_fingerprint,
+                )
+                .where(DataQualityIssueModel.batch_id == batch_id)
+                .order_by(DataQualityIssueModel.issue_id)
+            ).all()
+        )
+        return (*(getattr(batch, field) for field in fields), issues)
+
+
 @pytest.mark.parametrize(
     ("field", "replacement"),
     [
@@ -232,6 +288,66 @@ def test_claim_atomically_creates_validating_version_transitions_batch_and_audit
     assert audits[0].operator_label == "local operator"
     assert audits[0].request_note == "confirmed in local UI"
     assert audits[0].result == "CLAIMED"
+
+
+@pytest.mark.parametrize(
+    ("column", "invalid_value"),
+    [
+        ("source_file_size", None),
+        ("source_file_size", -1),
+        (
+            "field_mapping_json",
+            json.dumps(
+                {key: value for key, value in FIELD_MAPPING.items() if key != "amount"},
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        ),
+        ("field_mapping_json", json.dumps(FIELD_MAPPING, separators=(",", ":"))),
+        (
+            "field_mapping_json",
+            json.dumps(
+                {**FIELD_MAPPING, "unexpected": "unexpected"},
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        ),
+        ("row_count", 3),
+        ("accepted_count", -1),
+        ("warning_count", 3),
+        ("provider_version", " "),
+        ("schema_version", ""),
+        ("normalization_version", " "),
+        ("quality_rules_version", " "),
+        ("preview_fingerprint_version", " "),
+        ("preview_fingerprint", "A" * 64),
+        ("preview_fingerprint", "not-a-sha256"),
+        ("preview_completed_at", None),
+    ],
+)
+def test_claim_reuses_shared_preview_validation_and_preserves_corrupt_record(
+    engine: Engine,
+    column: str,
+    invalid_value: object,
+) -> None:
+    repository = DatasetRepository(engine, run_mode=RunMode.RESEARCH)
+    dataset_id = create_dataset(repository)
+    batch_id = insert_preview(engine)
+    with engine.begin() as connection:
+        connection.execute(
+            text(f"UPDATE import_batches SET {column}=:value WHERE batch_id=:batch_id"),
+            {"value": invalid_value, "batch_id": batch_id},
+        )
+    before = persisted_preview_snapshot(engine, batch_id)
+
+    with pytest.raises(DatasetError) as raised:
+        claim(repository, batch_id, dataset_id)
+
+    assert raised.value.category == "PUBLICATION_PREVIEW_REQUIRED"
+    with Session(engine) as session:
+        assert session.scalar(select(func.count()).select_from(DatasetVersionModel)) == 0
+        assert session.scalar(select(func.count()).select_from(PublicationAuditModel)) == 0
+    assert persisted_preview_snapshot(engine, batch_id) == before
 
 
 def test_naive_claimed_at_is_rejected_without_database_writes(engine: Engine) -> None:
@@ -376,15 +492,15 @@ def test_published_replay_returns_existing_version_without_new_audit(engine: Eng
 @pytest.mark.parametrize(
     ("case", "batch_options", "confirm_warnings", "expected_category"),
     [
-        ("pending-replay", {"status": "PENDING"}, True, "PUBLICATION_BATCH_NOT_READY"),
-        ("failed-replay", {"status": "FAILED"}, True, "PUBLICATION_BATCH_NOT_READY"),
+        ("pending-replay", {"status": "PENDING"}, True, "PUBLICATION_PREVIEW_REQUIRED"),
+        ("failed-replay", {"status": "FAILED"}, True, "PUBLICATION_PREVIEW_REQUIRED"),
         (
             "mapping-replay",
             {"field_mapping_json": None},
             True,
-            "PUBLICATION_PREVIEW_INCOMPLETE",
+            "PUBLICATION_PREVIEW_REQUIRED",
         ),
-        ("zero-replay", {"accepted_count": 0}, True, "PUBLICATION_PREVIEW_EMPTY"),
+        ("zero-replay", {"accepted_count": 0}, True, "PUBLICATION_BLOCKED_BY_QUALITY"),
         (
             "rejected-replay",
             {"rejected_count": 1},
@@ -586,10 +702,10 @@ def test_versions_are_allocated_independently_per_dataset(engine: Engine) -> Non
 @pytest.mark.parametrize(
     ("case", "batch_options", "expected_category"),
     [
-        ("pending", {"status": "PENDING"}, "PUBLICATION_BATCH_NOT_READY"),
-        ("failed", {"status": "FAILED"}, "PUBLICATION_BATCH_NOT_READY"),
-        ("mapping", {"field_mapping_json": None}, "PUBLICATION_PREVIEW_INCOMPLETE"),
-        ("zero", {"accepted_count": 0}, "PUBLICATION_PREVIEW_EMPTY"),
+        ("pending", {"status": "PENDING"}, "PUBLICATION_PREVIEW_REQUIRED"),
+        ("failed", {"status": "FAILED"}, "PUBLICATION_PREVIEW_REQUIRED"),
+        ("mapping", {"field_mapping_json": None}, "PUBLICATION_PREVIEW_REQUIRED"),
+        ("zero", {"accepted_count": 0}, "PUBLICATION_BLOCKED_BY_QUALITY"),
         ("blocked", {"blocking_issue": True}, "PUBLICATION_BLOCKED_BY_QUALITY"),
     ],
 )

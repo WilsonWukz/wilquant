@@ -16,7 +16,7 @@ from quant_lab.api.data_schemas import (
     ImportPreviewRequest,
     ImportPreviewResponse,
 )
-from quant_lab.market_data.domain import PreviewRecord
+from quant_lab.market_data.eligibility import persisted_publication_eligibility
 from quant_lab.market_data.errors import ImportDataError
 from quant_lab.market_data.repository import MarketDataRepository
 from quant_lab.market_data.staging import ControlledUploadStore, StagedUpload
@@ -80,52 +80,19 @@ def _discard_unowned_upload(upload: StagedUpload | None) -> None:
         )
 
 
-def _batch_response(batch: object) -> ImportBatchResponse:
+def _batch_response(
+    batch: object,
+    *,
+    issue_severities: tuple[str, ...],
+) -> ImportBatchResponse:
     from quant_lab.market_data.persistence import ImportBatchModel
 
     assert isinstance(batch, ImportBatchModel)
-    source_file_size = batch.source_file_size
-    field_mapping_json = batch.field_mapping_json
-    provider_version = batch.provider_version
-    normalization_version = batch.normalization_version
-    quality_rules_version = batch.quality_rules_version
-    preview_fingerprint_version = batch.preview_fingerprint_version
-    preview_fingerprint = batch.preview_fingerprint
-    preview_completed_at = batch.preview_completed_at
-    if (
-        batch.status != "PREVIEW_READY"
-        or source_file_size is None
-        or field_mapping_json is None
-        or provider_version is None
-        or normalization_version is None
-        or quality_rules_version is None
-        or preview_fingerprint_version is None
-        or preview_fingerprint is None
-        or preview_completed_at is None
-    ):
-        publish_eligibility = "PREVIEW_REQUIRED"
-    else:
-        try:
-            PreviewRecord(
-                source_file_size=source_file_size,
-                field_mapping_json=field_mapping_json,
-                provider_version=provider_version,
-                schema_version=batch.schema_version,
-                normalization_version=normalization_version,
-                quality_rules_version=quality_rules_version,
-                preview_fingerprint_version=preview_fingerprint_version,
-                row_count=batch.row_count,
-                accepted_count=batch.accepted_count,
-                rejected_count=batch.rejected_count,
-                warning_count=batch.warning_count,
-                preview_fingerprint=preview_fingerprint,
-                preview_completed_at=preview_completed_at,
-                issues=(),
-            )
-        except (TypeError, ValueError):
-            publish_eligibility = "PREVIEW_REQUIRED"
-        else:
-            publish_eligibility = "ELIGIBLE"
+    publish_eligibility = persisted_publication_eligibility(
+        batch,
+        issue_severities=issue_severities,
+        confirm_warnings=False,
+    ).value
     return ImportBatchResponse(
         batch_id=batch.batch_id,
         provider_name=batch.provider_name,
@@ -182,7 +149,9 @@ def preview_import(request: Request, payload: ImportPreviewRequest):
     started = monotonic()
     try:
         result = request.app.state.import_service.preview(payload.batch_id, payload.field_mapping)
-        batch = request.app.state.market_data_repository.get_batch(payload.batch_id)
+        repository: MarketDataRepository = request.app.state.market_data_repository
+        batch = repository.get_batch(payload.batch_id)
+        issues = repository.list_issues(payload.batch_id)
         logger.info(
             "Import preview ready",
             extra={
@@ -198,7 +167,10 @@ def preview_import(request: Request, payload: ImportPreviewRequest):
                 "duration_ms": round((monotonic() - started) * 1000),
             },
         )
-        response = _batch_response(batch).model_dump()
+        response = _batch_response(
+            batch,
+            issue_severities=tuple(issue.severity for issue in issues),
+        ).model_dump()
         return ImportPreviewResponse(**response, sample_rows=result.sample_rows)
     except ImportDataError as error:
         return _error(error, request_id, payload.batch_id)
@@ -210,7 +182,13 @@ def preview_import(request: Request, payload: ImportPreviewRequest):
 def get_import_batch(request: Request, batch_id: str):
     request_id = str(uuid4())
     try:
-        return _batch_response(request.app.state.market_data_repository.get_batch(batch_id))
+        repository: MarketDataRepository = request.app.state.market_data_repository
+        batch = repository.get_batch(batch_id)
+        issues = repository.list_issues(batch_id)
+        return _batch_response(
+            batch,
+            issue_severities=tuple(issue.severity for issue in issues),
+        )
     except ImportDataError as error:
         return _error(error, request_id, batch_id)
     except Exception as error:
