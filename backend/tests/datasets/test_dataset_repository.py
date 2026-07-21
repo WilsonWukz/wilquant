@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 import quant_lab.datasets.repository as repository_module
 from alembic import command
-from quant_lab.core.config import Settings
+from quant_lab.core.config import RunMode, Settings
 from quant_lab.datasets.errors import DatasetError
 from quant_lab.datasets.persistence import DatasetVersionModel
 from quant_lab.datasets.repository import (
@@ -52,7 +52,7 @@ def engine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Engine]:
 
 @pytest.fixture
 def repository(engine: Engine) -> DatasetRepository:
-    return DatasetRepository(engine)
+    return DatasetRepository(engine, run_mode=RunMode.RESEARCH)
 
 
 def insert_dataset_version(engine: Engine, dataset_id: str) -> str:

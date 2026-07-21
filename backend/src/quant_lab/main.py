@@ -41,7 +41,10 @@ def create_app(
         owned_engine = create_sqlite_engine(resolved_settings)
         repository = MarketDataRepository(owned_engine)
         app.state.market_data_repository = repository
-        app.state.dataset_repository = DatasetRepository(owned_engine)
+        app.state.dataset_repository = DatasetRepository(
+            owned_engine,
+            run_mode=resolved_settings.run_mode,
+        )
         app.state.import_service = MarketDataImportService(
             repository,
             resolved_settings.import_directory,

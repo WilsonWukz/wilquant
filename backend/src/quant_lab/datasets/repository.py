@@ -15,6 +15,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from quant_lab.core.config import RunMode
 from quant_lab.datasets.domain import DatasetVersionStatus
 from quant_lab.datasets.errors import DatasetError
 from quant_lab.datasets.persistence import (
@@ -158,8 +159,9 @@ def _restore_version_datetimes(version: DatasetVersionModel) -> DatasetVersionMo
 
 
 class DatasetRepository:
-    def __init__(self, engine: Engine) -> None:
+    def __init__(self, engine: Engine, *, run_mode: RunMode | str) -> None:
         self._engine = engine
+        self._run_mode = run_mode
 
     def create_or_get(
         self,
@@ -273,6 +275,11 @@ class DatasetRepository:
         request_note: str | None = None,
         claimed_at: datetime | None = None,
     ) -> PublicationClaimResult:
+        if self._run_mode is not RunMode.RESEARCH:
+            raise DatasetError(
+                "PUBLICATION_DISABLED_FOR_RUN_MODE",
+                "当前运行模式不允许发布数据集",
+            )
         claim_time = claimed_at or datetime.now(UTC)
         fingerprint: str | None = None
         connection = self._engine.connect()
@@ -286,6 +293,32 @@ class DatasetRepository:
                 batch = session.get(ImportBatchModel, batch_id)
                 if batch is None:
                     raise DatasetError("BATCH_NOT_FOUND", "导入批次不存在")
+
+                self._validate_persisted_preview(
+                    batch,
+                    expected_preview_fingerprint=expected_preview_fingerprint,
+                )
+                self._validate_publication_identity(
+                    dataset,
+                    batch,
+                    publication_config=publication_config,
+                )
+                is_new_claim = batch.status == ImportBatchStatus.PREVIEW_READY.value
+                if is_new_claim:
+                    self._validate_preview_ready_eligibility(
+                        session,
+                        batch=batch,
+                        confirm_warnings=confirm_warnings,
+                    )
+                elif batch.status not in {
+                    ImportBatchStatus.PUBLISHING.value,
+                    ImportBatchStatus.PUBLISHED.value,
+                    ImportBatchStatus.PUBLISH_FAILED.value,
+                }:
+                    raise DatasetError(
+                        "PUBLICATION_BATCH_NOT_READY",
+                        "当前批次不可发布",
+                    )
 
                 fingerprint = publication_fingerprint_for(
                     source_preview_fingerprint=expected_preview_fingerprint,
@@ -304,6 +337,11 @@ class DatasetRepository:
                     )
                 )
                 if existing is not None:
+                    if existing.source_batch_id != batch_id:
+                        raise DatasetError(
+                            "PUBLICATION_FINGERPRINT_BATCH_CONFLICT",
+                            "发布指纹已属于其他导入批次",
+                        )
                     _restore_version_datetimes(existing)
                     session.expunge(existing)
                     connection.commit()
@@ -312,15 +350,11 @@ class DatasetRepository:
                         created=False,
                         idempotent_replay=True,
                     )
-
-                self._validate_publication_claim(
-                    session,
-                    dataset=dataset,
-                    batch=batch,
-                    expected_preview_fingerprint=expected_preview_fingerprint,
-                    publication_config=publication_config,
-                    confirm_warnings=confirm_warnings,
-                )
+                if not is_new_claim:
+                    raise DatasetError(
+                        "PUBLICATION_REPLAY_MISMATCH",
+                        "发布重试与原声明不一致",
+                    )
                 next_version = (
                     session.scalar(
                         select(func.max(DatasetVersionModel.version)).where(
@@ -413,6 +447,11 @@ class DatasetRepository:
                             )
                         )
                         if winner is not None:
+                            if winner.source_batch_id != batch_id:
+                                raise DatasetError(
+                                    "PUBLICATION_FINGERPRINT_BATCH_CONFLICT",
+                                    "发布指纹已属于其他导入批次",
+                                ) from error
                             _restore_version_datetimes(winner)
                             winner_session.expunge(winner)
                             return PublicationClaimResult(
@@ -433,17 +472,11 @@ class DatasetRepository:
             connection.close()
 
     @staticmethod
-    def _validate_publication_claim(
-        session: Session,
-        *,
-        dataset: DatasetModel,
+    def _validate_persisted_preview(
         batch: ImportBatchModel,
+        *,
         expected_preview_fingerprint: str,
-        publication_config: PublicationConfig,
-        confirm_warnings: bool,
     ) -> None:
-        if batch.status != ImportBatchStatus.PREVIEW_READY.value:
-            raise DatasetError("PUBLICATION_BATCH_NOT_READY", "当前批次不可发布")
         preview_fields = (
             batch.field_mapping_json,
             batch.provider_version,
@@ -463,6 +496,14 @@ class DatasetRepository:
                 "PREVIEW_FINGERPRINT_MISMATCH",
                 "预览指纹不一致, 请重新预览",
             )
+
+    @staticmethod
+    def _validate_publication_identity(
+        dataset: DatasetModel,
+        batch: ImportBatchModel,
+        *,
+        publication_config: PublicationConfig,
+    ) -> None:
         if (
             dataset.frequency != publication_config.frequency
             or dataset.adjustment_type != publication_config.adjustment_type
@@ -473,6 +514,16 @@ class DatasetRepository:
                 "PUBLICATION_DATASET_MISMATCH",
                 "数据集身份与发布配置不一致",
             )
+
+    @staticmethod
+    def _validate_preview_ready_eligibility(
+        session: Session,
+        *,
+        batch: ImportBatchModel,
+        confirm_warnings: bool,
+    ) -> None:
+        if batch.status != ImportBatchStatus.PREVIEW_READY.value:
+            raise DatasetError("PUBLICATION_BATCH_NOT_READY", "当前批次不可发布")
         if batch.accepted_count <= 0:
             raise DatasetError("PUBLICATION_PREVIEW_EMPTY", "没有可发布的数据")
         blocking_issues = session.scalar(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, replace
@@ -13,7 +14,7 @@ from sqlalchemy import Engine, func, select, text
 from sqlalchemy.orm import Session
 
 from alembic import command
-from quant_lab.core.config import Settings
+from quant_lab.core.config import RunMode, Settings
 from quant_lab.datasets.errors import DatasetError
 from quant_lab.datasets.persistence import (
     DatasetVersionModel,
@@ -107,7 +108,7 @@ def insert_preview(
                 provider_name="local_csv",
                 source_name=f"{suffix}.csv",
                 source_file=f"uploads/{suffix}.csv",
-                source_file_hash=(suffix[0] * 64)[:64],
+                source_file_hash=hashlib.sha256(suffix.encode("utf-8")).hexdigest(),
                 requested_at=NOW,
                 started_at=NOW,
                 completed_at=NOW,
@@ -210,7 +211,7 @@ def test_publication_fingerprint_is_stable_and_covers_publication_identity(
 def test_claim_atomically_creates_validating_version_transitions_batch_and_audits(
     engine: Engine,
 ) -> None:
-    repository = DatasetRepository(engine)
+    repository = DatasetRepository(engine, run_mode=RunMode.RESEARCH)
     dataset_id = create_dataset(repository)
     batch_id = insert_preview(engine)
 
@@ -236,7 +237,7 @@ def test_claim_atomically_creates_validating_version_transitions_batch_and_audit
 def test_concurrent_same_fingerprint_claims_one_version_transition_and_substantive_audit(
     engine: Engine,
 ) -> None:
-    repository = DatasetRepository(engine)
+    repository = DatasetRepository(engine, run_mode=RunMode.RESEARCH)
     dataset_id = create_dataset(repository)
     batch_id = insert_preview(engine)
     workers = 2
@@ -244,7 +245,7 @@ def test_concurrent_same_fingerprint_claims_one_version_transition_and_substanti
 
     def concurrent_claim(index: int):
         barrier.wait()
-        return DatasetRepository(engine).claim_publication(
+        return DatasetRepository(engine, run_mode=RunMode.RESEARCH).claim_publication(
             batch_id=batch_id,
             dataset_id=dataset_id,
             expected_preview_fingerprint=PREVIEW_FINGERPRINT,
@@ -275,7 +276,7 @@ def test_processing_replay_returns_same_id_status_and_frozen_claim_time(
     engine: Engine,
     existing_status: str,
 ) -> None:
-    repository = DatasetRepository(engine)
+    repository = DatasetRepository(engine, run_mode=RunMode.RESEARCH)
     dataset_id = create_dataset(repository)
     batch_id = insert_preview(engine)
     first = claim(repository, batch_id, dataset_id)
@@ -295,7 +296,7 @@ def test_processing_replay_returns_same_id_status_and_frozen_claim_time(
 
 
 def test_published_replay_returns_existing_version_without_new_audit(engine: Engine) -> None:
-    repository = DatasetRepository(engine)
+    repository = DatasetRepository(engine, run_mode=RunMode.RESEARCH)
     dataset_id = create_dataset(repository)
     batch_id = insert_preview(engine)
     first = claim(repository, batch_id, dataset_id)
@@ -318,11 +319,151 @@ def test_published_replay_returns_existing_version_without_new_audit(engine: Eng
         assert session.scalar(select(func.count()).select_from(PublicationAuditModel)) == 1
 
 
+@pytest.mark.parametrize(
+    ("case", "batch_options", "confirm_warnings", "expected_category"),
+    [
+        ("pending-replay", {"status": "PENDING"}, True, "PUBLICATION_BATCH_NOT_READY"),
+        ("failed-replay", {"status": "FAILED"}, True, "PUBLICATION_BATCH_NOT_READY"),
+        (
+            "mapping-replay",
+            {"field_mapping_json": None},
+            True,
+            "PUBLICATION_PREVIEW_INCOMPLETE",
+        ),
+        ("zero-replay", {"accepted_count": 0}, True, "PUBLICATION_PREVIEW_EMPTY"),
+        (
+            "rejected-replay",
+            {"rejected_count": 1},
+            True,
+            "PUBLICATION_BLOCKED_BY_QUALITY",
+        ),
+        (
+            "blocked-replay",
+            {"blocking_issue": True},
+            True,
+            "PUBLICATION_BLOCKED_BY_QUALITY",
+        ),
+        (
+            "warning-replay",
+            {"warning_count": 1},
+            False,
+            "PUBLICATION_WARNINGS_NOT_CONFIRMED",
+        ),
+    ],
+)
+def test_existing_fingerprint_does_not_bypass_current_batch_eligibility(
+    engine: Engine,
+    case: str,
+    batch_options: dict[str, object],
+    confirm_warnings: bool,
+    expected_category: str,
+) -> None:
+    repository = DatasetRepository(engine, run_mode=RunMode.RESEARCH)
+    dataset_id = create_dataset(repository)
+    winner_batch_id = insert_preview(engine, suffix="winner")
+    winner = claim(repository, winner_batch_id, dataset_id)
+    challenger_batch_id = insert_preview(engine, suffix=case, **batch_options)  # type: ignore[arg-type]
+
+    with pytest.raises(DatasetError) as raised:
+        repository.claim_publication(
+            batch_id=challenger_batch_id,
+            dataset_id=dataset_id,
+            expected_preview_fingerprint=PREVIEW_FINGERPRINT,
+            publication_config=config(),
+            confirm_warnings=confirm_warnings,
+            request_id=f"request-{case}",
+            claimed_at=NOW + timedelta(hours=1),
+        )
+
+    assert raised.value.category == expected_category
+    with Session(engine) as session:
+        versions = session.scalars(select(DatasetVersionModel)).all()
+        audits = session.scalars(select(PublicationAuditModel)).all()
+        challenger = session.get(ImportBatchModel, challenger_batch_id)
+    assert [version.dataset_version_id for version in versions] == [
+        winner.version.dataset_version_id
+    ]
+    assert len(audits) == 1
+    assert challenger is not None
+    assert challenger.status == batch_options.get("status", "PREVIEW_READY")
+
+
+def test_existing_fingerprint_from_different_eligible_batch_is_a_stable_conflict(
+    engine: Engine,
+) -> None:
+    repository = DatasetRepository(engine, run_mode=RunMode.RESEARCH)
+    dataset_id = create_dataset(repository)
+    winner_batch_id = insert_preview(engine, suffix="winner")
+    winner = claim(repository, winner_batch_id, dataset_id)
+    challenger_batch_id = insert_preview(engine, suffix="challenger")
+
+    with pytest.raises(DatasetError) as raised:
+        claim(repository, challenger_batch_id, dataset_id)
+
+    assert raised.value.category == "PUBLICATION_FINGERPRINT_BATCH_CONFLICT"
+    with Session(engine) as session:
+        versions = session.scalars(select(DatasetVersionModel)).all()
+        audits = session.scalars(select(PublicationAuditModel)).all()
+        challenger = session.get(ImportBatchModel, challenger_batch_id)
+    assert [version.dataset_version_id for version in versions] == [
+        winner.version.dataset_version_id
+    ]
+    assert len(audits) == 1
+    assert challenger is not None and challenger.status == "PREVIEW_READY"
+
+
+@pytest.mark.parametrize("run_mode", [RunMode.PAPER, RunMode.LIVE, "UNKNOWN"])
+def test_non_research_mode_rejects_claim_without_writes(
+    engine: Engine,
+    run_mode: RunMode | str,
+) -> None:
+    setup_repository = DatasetRepository(engine, run_mode=RunMode.RESEARCH)
+    dataset_id = create_dataset(setup_repository)
+    batch_id = insert_preview(engine)
+    restricted_repository = DatasetRepository(engine, run_mode=run_mode)
+
+    with pytest.raises(DatasetError) as raised:
+        claim(restricted_repository, batch_id, dataset_id)
+
+    assert raised.value.category == "PUBLICATION_DISABLED_FOR_RUN_MODE"
+    with Session(engine) as session:
+        assert session.scalar(select(func.count()).select_from(DatasetVersionModel)) == 0
+        assert session.scalar(select(func.count()).select_from(PublicationAuditModel)) == 0
+        batch = session.get(ImportBatchModel, batch_id)
+    assert batch is not None and batch.status == "PREVIEW_READY"
+
+
+@pytest.mark.parametrize("run_mode", [RunMode.PAPER, RunMode.LIVE, "UNKNOWN"])
+def test_non_research_mode_rejects_idempotent_replay_without_writes(
+    engine: Engine,
+    run_mode: RunMode | str,
+) -> None:
+    research_repository = DatasetRepository(engine, run_mode=RunMode.RESEARCH)
+    dataset_id = create_dataset(research_repository)
+    batch_id = insert_preview(engine)
+    winner = claim(research_repository, batch_id, dataset_id)
+    restricted_repository = DatasetRepository(engine, run_mode=run_mode)
+
+    with pytest.raises(DatasetError) as raised:
+        claim(restricted_repository, batch_id, dataset_id)
+
+    assert raised.value.category == "PUBLICATION_DISABLED_FOR_RUN_MODE"
+    with Session(engine) as session:
+        versions = session.scalars(select(DatasetVersionModel)).all()
+        audits = session.scalars(select(PublicationAuditModel)).all()
+        batch = session.get(ImportBatchModel, batch_id)
+    assert [version.dataset_version_id for version in versions] == [
+        winner.version.dataset_version_id
+    ]
+    assert len(audits) == 1
+    assert batch is not None and batch.status == "PUBLISHING"
+
+
 def test_unique_constraint_race_rereads_winner_without_leaking_integrity_error(
     engine: Engine,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    repository = DatasetRepository(engine)
+    repository = DatasetRepository(engine, run_mode=RunMode.RESEARCH)
     dataset_id = create_dataset(repository)
     batch_id = insert_preview(engine)
     winner = claim(repository, batch_id, dataset_id)
@@ -357,7 +498,7 @@ def test_unique_constraint_race_rereads_winner_without_leaking_integrity_error(
 
 
 def test_versions_are_allocated_independently_per_dataset(engine: Engine) -> None:
-    repository = DatasetRepository(engine)
+    repository = DatasetRepository(engine, run_mode=RunMode.RESEARCH)
     dataset_a = create_dataset(repository, suffix="a")
     dataset_b = create_dataset(repository, suffix="b")
     batch_a = insert_preview(engine, suffix="a", preview_fingerprint="a" * 64)
@@ -366,7 +507,7 @@ def test_versions_are_allocated_independently_per_dataset(engine: Engine) -> Non
 
     def worker(dataset_id: str, batch_id: str, fingerprint: str):
         barrier.wait()
-        return DatasetRepository(engine).claim_publication(
+        return DatasetRepository(engine, run_mode=RunMode.RESEARCH).claim_publication(
             batch_id=batch_id,
             dataset_id=dataset_id,
             expected_preview_fingerprint=fingerprint,
@@ -404,7 +545,7 @@ def test_claim_rejects_ineligible_preview_without_partial_state(
     batch_options: dict[str, object],
     expected_category: str,
 ) -> None:
-    repository = DatasetRepository(engine)
+    repository = DatasetRepository(engine, run_mode=RunMode.RESEARCH)
     dataset_id = create_dataset(repository, suffix=case)
     batch_id = insert_preview(engine, suffix=case, **batch_options)  # type: ignore[arg-type]
 
@@ -420,7 +561,7 @@ def test_claim_rejects_ineligible_preview_without_partial_state(
 
 
 def test_claim_checks_expected_fingerprint_and_dataset_identity(engine: Engine) -> None:
-    repository = DatasetRepository(engine)
+    repository = DatasetRepository(engine, run_mode=RunMode.RESEARCH)
     dataset_id = create_dataset(repository)
     batch_id = insert_preview(engine)
 
