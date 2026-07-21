@@ -210,6 +210,82 @@ def test_non_positive_ohlc_issue_fingerprint_covers_the_specific_value(
     assert fingerprint_issue(left_issue) != fingerprint_issue(right_issue)
 
 
+def test_zero_volume_warning_carries_canonical_values() -> None:
+    class ZeroVolumeProvider(SyntheticDataProvider):
+        def __init__(self, value: str) -> None:
+            super().__init__()
+            self.value = value
+
+        def load_bars(self, source: DataSourceInput) -> RawBarBatch:
+            row = super().load_bars(source).rows[0]
+            return RawBarBatch(
+                (RawRow(row.row_number, {**row.values, "volume": self.value}),)
+            )
+
+    left = process(provider=ZeroVolumeProvider("0"))
+    right = process(provider=ZeroVolumeProvider("00"))
+    left_issue = next(item for item in left.issues if item.issue_code == "ZERO_VOLUME")
+    right_issue = next(item for item in right.issues if item.issue_code == "ZERO_VOLUME")
+
+    assert left_issue.raw_value == "0"
+    assert left_issue.normalized_value == 0
+    assert fingerprint_issue(left_issue) != fingerprint_issue(right_issue)
+
+
+def test_zero_amount_warning_carries_canonical_values() -> None:
+    class ZeroAmountProvider(SyntheticDataProvider):
+        def __init__(self, value: str) -> None:
+            super().__init__()
+            self.value = value
+
+        def load_bars(self, source: DataSourceInput) -> RawBarBatch:
+            row = super().load_bars(source).rows[0]
+            return RawBarBatch(
+                (RawRow(row.row_number, {**row.values, "amount": self.value}),)
+            )
+
+    left = process(provider=ZeroAmountProvider("0"))
+    right = process(provider=ZeroAmountProvider("0.00"))
+    left_issue = next(item for item in left.issues if item.issue_code == "ZERO_AMOUNT")
+    right_issue = next(item for item in right.issues if item.issue_code == "ZERO_AMOUNT")
+
+    assert left_issue.raw_value == "0"
+    assert left_issue.normalized_value == Decimal("0")
+    assert fingerprint_issue(left_issue) != fingerprint_issue(right_issue)
+
+
+def test_extreme_price_jump_warning_carries_canonical_values() -> None:
+    class ExtremeCloseProvider(SyntheticDataProvider):
+        def __init__(self, value: str) -> None:
+            super().__init__("extreme_jump")
+            self.value = value
+
+        def load_bars(self, source: DataSourceInput) -> RawBarBatch:
+            batch = super().load_bars(source)
+            later = batch.rows[1]
+            rows = (
+                batch.rows[0],
+                RawRow(
+                    later.row_number,
+                    {**later.values, "high": self.value, "close": self.value},
+                ),
+            )
+            return RawBarBatch(rows)
+
+    left = process(provider=ExtremeCloseProvider("21"))
+    right = process(provider=ExtremeCloseProvider("22"))
+    left_issue = next(
+        item for item in left.issues if item.issue_code == "EXTREME_PRICE_JUMP"
+    )
+    right_issue = next(
+        item for item in right.issues if item.issue_code == "EXTREME_PRICE_JUMP"
+    )
+
+    assert left_issue.raw_value == "21"
+    assert left_issue.normalized_value == Decimal("21")
+    assert fingerprint_issue(left_issue) != fingerprint_issue(right_issue)
+
+
 def test_processing_does_not_persist_preview_bars() -> None:
     result = process()
 

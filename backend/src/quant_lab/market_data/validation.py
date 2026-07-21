@@ -14,7 +14,15 @@ from quant_lab.market_data.domain import (
 )
 
 
-def _issue(row_number: int, bar: Bar, field: str, code: str, message: str) -> QualityIssue:
+def _issue(
+    row_number: int,
+    bar: Bar,
+    field: str,
+    code: str,
+    message: str,
+    *,
+    severity: IssueSeverity = IssueSeverity.ERROR,
+) -> QualityIssue:
     normalized_values: dict[str, object] = {
         "open": bar.open,
         "high": bar.high,
@@ -28,11 +36,24 @@ def _issue(row_number: int, bar: Bar, field: str, code: str, message: str) -> Qu
         row_number,
         bar.symbol,
         field,
-        IssueSeverity.ERROR,
+        severity,
         code,
         message,
         normalized_value=normalized_values.get(field),
         instrument_id=bar.instrument_id,
+    )
+
+
+def _warning_issue(
+    row_number: int, bar: Bar, field: str, code: str, message: str
+) -> QualityIssue:
+    return _issue(
+        row_number,
+        bar,
+        field,
+        code,
+        message,
+        severity=IssueSeverity.WARNING,
     )
 
 
@@ -131,22 +152,20 @@ def validate_bars(indexed_bars: list[tuple[int, Bar]]) -> ValidationResult:
         warning_issues: list[QualityIssue] = []
         if original_bar.volume == 0:
             warning_issues.append(
-                QualityIssue(
+                _warning_issue(
                     row_number,
-                    original_bar.symbol,
+                    original_bar,
                     "volume",
-                    IssueSeverity.WARNING,
                     "ZERO_VOLUME",
                     "成交量为零",
                 )
             )
         if original_bar.amount == 0:
             warning_issues.append(
-                QualityIssue(
+                _warning_issue(
                     row_number,
-                    original_bar.symbol,
+                    original_bar,
                     "amount",
-                    IssueSeverity.WARNING,
                     "ZERO_AMOUNT",
                     "成交额为零",
                 )
@@ -154,11 +173,10 @@ def validate_bars(indexed_bars: list[tuple[int, Bar]]) -> ValidationResult:
         prior_close = previous_close.get(original_bar.instrument_id)
         if prior_close is not None and abs(original_bar.close / prior_close - 1) > Decimal("0.30"):
             warning_issues.append(
-                QualityIssue(
+                _warning_issue(
                     row_number,
-                    original_bar.symbol,
+                    original_bar,
                     "close",
-                    IssueSeverity.WARNING,
                     "EXTREME_PRICE_JUMP",
                     "相邻收盘价绝对涨幅超过30%",
                 )
