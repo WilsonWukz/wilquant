@@ -4,7 +4,7 @@ import hashlib
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from threading import Barrier
 
@@ -232,6 +232,60 @@ def test_claim_atomically_creates_validating_version_transitions_batch_and_audit
     assert audits[0].operator_label == "local operator"
     assert audits[0].request_note == "confirmed in local UI"
     assert audits[0].result == "CLAIMED"
+
+
+def test_naive_claimed_at_is_rejected_without_database_writes(engine: Engine) -> None:
+    repository = DatasetRepository(engine, run_mode=RunMode.RESEARCH)
+    dataset_id = create_dataset(repository)
+    batch_id = insert_preview(engine)
+    naive_claimed_at = datetime(2026, 7, 21, 9, 0)
+
+    with pytest.raises(DatasetError) as raised:
+        claim(repository, batch_id, dataset_id, claimed_at=naive_claimed_at)
+
+    assert raised.value.category == "PUBLICATION_CLAIM_TIME_INVALID"
+    with Session(engine) as session:
+        assert session.scalar(select(func.count()).select_from(DatasetVersionModel)) == 0
+        assert session.scalar(select(func.count()).select_from(PublicationAuditModel)) == 0
+        batch = session.get(ImportBatchModel, batch_id)
+    assert batch is not None and batch.status == "PREVIEW_READY"
+
+
+def test_non_utc_claimed_at_is_normalized_before_first_claim(engine: Engine) -> None:
+    repository = DatasetRepository(engine, run_mode=RunMode.RESEARCH)
+    dataset_id = create_dataset(repository)
+    batch_id = insert_preview(engine)
+    shanghai = timezone(timedelta(hours=8))
+    local_claimed_at = datetime(2026, 7, 21, 17, 0, tzinfo=shanghai)
+
+    result = claim(repository, batch_id, dataset_id, claimed_at=local_claimed_at)
+    fetched = repository.get_version(dataset_id, result.version.dataset_version_id)
+
+    assert result.version.publication_claimed_at == NOW
+    assert result.version.publication_claimed_at.tzinfo is UTC
+    assert fetched.publication_claimed_at == NOW
+    assert fetched.publication_claimed_at.tzinfo is UTC
+
+
+def test_replay_reuses_first_normalized_utc_claim_time(engine: Engine) -> None:
+    repository = DatasetRepository(engine, run_mode=RunMode.RESEARCH)
+    dataset_id = create_dataset(repository)
+    batch_id = insert_preview(engine)
+    shanghai = timezone(timedelta(hours=8))
+    local_claimed_at = datetime(2026, 7, 21, 17, 0, tzinfo=shanghai)
+    first = claim(repository, batch_id, dataset_id, claimed_at=local_claimed_at)
+
+    replay = claim(
+        repository,
+        batch_id,
+        dataset_id,
+        claimed_at=NOW + timedelta(days=1),
+    )
+
+    assert first.version.publication_claimed_at == NOW
+    assert replay.version.publication_claimed_at == NOW
+    assert first.version.publication_claimed_at.tzinfo is UTC
+    assert replay.version.publication_claimed_at.tzinfo is UTC
 
 
 def test_concurrent_same_fingerprint_claims_one_version_transition_and_substantive_audit(

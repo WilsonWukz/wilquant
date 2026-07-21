@@ -140,6 +140,17 @@ def _utc_aware(value: datetime | None) -> datetime | None:
     return value.astimezone(UTC)
 
 
+def _claim_time_utc(value: datetime | None) -> datetime:
+    if value is None:
+        return datetime.now(UTC)
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise DatasetError(
+            "PUBLICATION_CLAIM_TIME_INVALID",
+            "发布时间必须包含时区",
+        )
+    return value.astimezone(UTC)
+
+
 def _restore_dataset_datetimes(dataset: DatasetModel) -> DatasetModel:
     dataset.created_at = cast(datetime, _utc_aware(dataset.created_at))
     dataset.updated_at = cast(datetime, _utc_aware(dataset.updated_at))
@@ -280,7 +291,7 @@ class DatasetRepository:
                 "PUBLICATION_DISABLED_FOR_RUN_MODE",
                 "当前运行模式不允许发布数据集",
             )
-        claim_time = claimed_at or datetime.now(UTC)
+        claim_time = _claim_time_utc(claimed_at)
         fingerprint: str | None = None
         connection = self._engine.connect()
         try:
