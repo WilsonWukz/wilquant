@@ -26,6 +26,11 @@ def _migrated_engine(tmp_path: Path, monkeypatch) -> Engine:
 
 def _seed_version(engine: Engine, *, status: DatasetVersionStatus) -> None:
     now = datetime.now(UTC)
+    initial_status = (
+        DatasetVersionStatus.FILES_COMMITTED
+        if status is DatasetVersionStatus.PUBLISHED
+        else status
+    )
     with Session(engine) as session:
         source = DataSourceModel(
             source_id="source-1",
@@ -71,7 +76,7 @@ def _seed_version(engine: Engine, *, status: DatasetVersionStatus) -> None:
             dataset_version_id="version-1",
             dataset_id=dataset.dataset_id,
             version=1,
-            status=status.value,
+            status=initial_status.value,
             source_batch_id=batch.batch_id,
             source_preview_fingerprint="c" * 64,
             publication_fingerprint="d" * 64,
@@ -116,6 +121,14 @@ def _seed_version(engine: Engine, *, status: DatasetVersionStatus) -> None:
         session.add(dataset_file)
         session.commit()
 
+    if status is DatasetVersionStatus.PUBLISHED:
+        with engine.begin() as connection:
+            connection.execute(
+                update(DatasetVersionModel)
+                .where(DatasetVersionModel.dataset_version_id == "version-1")
+                .values(status=status.value, published_at=now)
+            )
+
 
 def test_files_committed_version_can_transition_to_published(
     tmp_path: Path,
@@ -137,6 +150,28 @@ def test_files_committed_version_can_transition_to_published(
         assert persisted is not None
         assert persisted.status == DatasetVersionStatus.PUBLISHED.value
         assert persisted.published_at is not None
+    engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        DatasetVersionStatus.VALIDATING,
+        DatasetVersionStatus.STAGING,
+        DatasetVersionStatus.FILES_COMMITTING,
+        DatasetVersionStatus.FILES_COMMITTED,
+    ],
+)
+def test_non_published_version_allows_file_insert(
+    tmp_path: Path,
+    monkeypatch,
+    status: DatasetVersionStatus,
+) -> None:
+    engine = _migrated_engine(tmp_path, monkeypatch)
+    _seed_version(engine, status=status)
+
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT count(*) FROM dataset_files")).scalar_one() == 1
     engine.dispose()
 
 
@@ -175,6 +210,25 @@ def test_files_of_published_version_reject_update_and_delete(
     with pytest.raises(IntegrityError), engine.begin() as connection:
         connection.execute(
             delete(DatasetFileModel).where(DatasetFileModel.dataset_file_id == "file-1")
+        )
+    engine.dispose()
+
+
+def test_published_version_rejects_new_file(tmp_path: Path, monkeypatch) -> None:
+    engine = _migrated_engine(tmp_path, monkeypatch)
+    _seed_version(engine, status=DatasetVersionStatus.PUBLISHED)
+    now = datetime.now(UTC).isoformat()
+
+    with pytest.raises(IntegrityError), engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO dataset_files "
+                "(dataset_file_id, dataset_version_id, relative_path, partition_values_json, "
+                "row_count, size_bytes, sha256, min_timestamp, max_timestamp, created_at) "
+                "VALUES ('file-2', 'version-1', 'second.parquet', '{}', 1, 64, :sha256, "
+                ":now, :now, :now)"
+            ),
+            {"sha256": "0" * 64, "now": now},
         )
     engine.dispose()
 

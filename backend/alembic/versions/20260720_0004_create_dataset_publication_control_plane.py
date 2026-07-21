@@ -19,8 +19,10 @@ depends_on: str | Sequence[str] | None = None
 
 _ISSUE_INDEX = "uq_data_quality_issues_batch_fingerprint"
 _ISSUE_FINGERPRINT_VERSION = "quality-issue-sha256@2"
+_DOWNGRADE_COLLISION_ERROR = "DOWNGRADE_0004_ISSUE_FINGERPRINT_V1_COLLISION"
 _TRIGGERS = (
     "trg_dataset_files_published_no_delete",
+    "trg_dataset_files_published_no_insert",
     "trg_dataset_files_published_no_update",
     "trg_dataset_versions_published_no_delete",
     "trg_dataset_versions_published_no_update",
@@ -107,6 +109,8 @@ def _rebuild_issue_fingerprints(*, version: int) -> None:
         fingerprint = _v2_fingerprint(row) if version == 2 else _v1_fingerprint(row)
         identity = (row["batch_id"], fingerprint)
         if identity in seen:
+            if version == 1:
+                raise RuntimeError(_DOWNGRADE_COLLISION_ERROR)
             connection.execute(sa.delete(issues).where(issues.c.issue_id == row["issue_id"]))
             continue
         seen.add(identity)
@@ -116,6 +120,19 @@ def _rebuild_issue_fingerprints(*, version: int) -> None:
         connection.execute(
             sa.update(issues).where(issues.c.issue_id == row["issue_id"]).values(**values)
         )
+
+
+def _assert_v1_downgrade_has_no_collisions() -> None:
+    issues = _issue_table(include_v2=True)
+    rows = op.get_bind().execute(
+        sa.select(issues).order_by(issues.c.created_at, issues.c.issue_id)
+    ).mappings()
+    identities: set[tuple[str, str]] = set()
+    for row in rows:
+        identity = (row["batch_id"], _v1_fingerprint(row))
+        if identity in identities:
+            raise RuntimeError(_DOWNGRADE_COLLISION_ERROR)
+        identities.add(identity)
 
 
 def _upgrade_issues() -> None:
@@ -354,6 +371,20 @@ def _create_triggers() -> None:
     )
     op.execute(
         """
+        CREATE TRIGGER trg_dataset_files_published_no_insert
+        BEFORE INSERT ON dataset_files
+        WHEN EXISTS (
+            SELECT 1 FROM dataset_versions
+            WHERE dataset_version_id = NEW.dataset_version_id
+              AND status = 'PUBLISHED'
+        )
+        BEGIN
+            SELECT RAISE(ABORT, 'PUBLISHED_DATASET_FILE_IMMUTABLE');
+        END
+        """
+    )
+    op.execute(
+        """
         CREATE TRIGGER trg_dataset_files_published_no_update
         BEFORE UPDATE ON dataset_files
         WHEN EXISTS (
@@ -390,6 +421,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    _assert_v1_downgrade_has_no_collisions()
+
     for trigger in _TRIGGERS:
         op.execute(f"DROP TRIGGER IF EXISTS {trigger}")
 

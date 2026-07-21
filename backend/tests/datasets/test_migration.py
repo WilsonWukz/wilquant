@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from alembic.config import Config
 from sqlalchemy import Engine, inspect, text
 
@@ -33,6 +34,7 @@ PUBLICATION_TABLES = {
 PUBLISHED_TRIGGERS = {
     "trg_dataset_versions_published_no_update",
     "trg_dataset_versions_published_no_delete",
+    "trg_dataset_files_published_no_insert",
     "trg_dataset_files_published_no_update",
     "trg_dataset_files_published_no_delete",
 }
@@ -120,6 +122,7 @@ def _assert_publication_schema(engine: Engine) -> None:
     assert "OLD.status = 'PUBLISHED'" not in triggers[
         "trg_dataset_files_published_no_update"
     ]
+    assert "status = 'PUBLISHED'" in triggers["trg_dataset_files_published_no_insert"]
     assert "status = 'PUBLISHED'" in triggers["trg_dataset_files_published_no_update"]
     assert "status = 'PUBLISHED'" in triggers["trg_dataset_files_published_no_delete"]
 
@@ -236,4 +239,76 @@ def test_0004_downgrades_to_valid_0003_and_upgrades_again(
 
     command.upgrade(config, "head")
     _assert_publication_schema(engine)
+    engine.dispose()
+
+
+def test_downgrade_rejects_v1_issue_identity_collision_without_changing_0004(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config, engine = _migration_context(tmp_path, monkeypatch)
+    command.upgrade(config, "head")
+    now = datetime.now(UTC).isoformat()
+
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "INSERT INTO data_sources "
+                "(source_id, identifier, name, source_type, is_local, version, "
+                "original_file, created_at) VALUES "
+                "('source-collision', 'local_csv', 'collision.csv', 'LOCAL_CSV', 1, '1', "
+                "'collision.csv', :now)"
+            ),
+            {"now": now},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO import_batches "
+                "(batch_id, data_source_id, provider_name, source_name, source_file, "
+                "source_file_hash, requested_at, status, row_count, accepted_count, "
+                "rejected_count, warning_count, schema_version) VALUES "
+                "('batch-collision', 'source-collision', 'local_csv', 'collision.csv', "
+                "'uploads/collision.csv', :source_hash, :now, 'PREVIEW_READY', 2, 0, 2, 0, '1')"
+            ),
+            {"source_hash": "d" * 64, "now": now},
+        )
+        for issue_id, fingerprint, normalized_value in (
+            ("issue-normalized-1", "1" * 64, '"1"'),
+            ("issue-normalized-2", "2" * 64, '"2"'),
+        ):
+            connection.execute(
+                text(
+                    "INSERT INTO data_quality_issues "
+                    "(issue_id, batch_id, row_number, symbol, field_name, severity, "
+                    "issue_code, message, raw_value, issue_fingerprint, "
+                    "issue_fingerprint_version, normalized_value, created_at) VALUES "
+                    "(:issue_id, 'batch-collision', 2, '600000', 'high', 'ERROR', "
+                    "'HIGH_BELOW_LOW', 'same message', '9', :fingerprint, "
+                    "'quality-issue-sha256@2', :normalized_value, :now)"
+                ),
+                {
+                    "issue_id": issue_id,
+                    "fingerprint": fingerprint,
+                    "normalized_value": normalized_value,
+                    "now": now,
+                },
+            )
+
+    with pytest.raises(
+        RuntimeError,
+        match="DOWNGRADE_0004_ISSUE_FINGERPRINT_V1_COLLISION",
+    ):
+        command.downgrade(config, REVISION_0003)
+
+    _assert_publication_schema(engine)
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
+            REVISION_0004
+        )
+        assert connection.execute(
+            text(
+                "SELECT count(*) FROM data_quality_issues "
+                "WHERE batch_id = 'batch-collision'"
+            )
+        ).scalar_one() == 2
     engine.dispose()
