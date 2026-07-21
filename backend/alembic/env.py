@@ -6,6 +6,7 @@ from sqlalchemy import engine_from_config, pool
 
 from alembic import context
 from quant_lab.core.config import Settings
+from quant_lab.datasets import persistence as dataset_persistence  # noqa: F401
 from quant_lab.db.sqlite import Base
 from quant_lab.market_data import persistence as market_data_persistence  # noqa: F401
 

@@ -7,6 +7,7 @@ from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, Nume
 from sqlalchemy.orm import Mapped, mapped_column
 
 from quant_lab.db.sqlite import Base
+from quant_lab.market_data.versions import ISSUE_FINGERPRINT_VERSION
 
 
 class InstrumentModel(Base):
@@ -65,6 +66,14 @@ class ImportBatchModel(Base):
     schema_version: Mapped[str] = mapped_column(String(32), nullable=False)
     error_category: Mapped[str | None] = mapped_column(String(64))
     error_summary: Mapped[str | None] = mapped_column(Text)
+    source_file_size: Mapped[int | None] = mapped_column(Integer)
+    field_mapping_json: Mapped[str | None] = mapped_column(Text)
+    provider_version: Mapped[str | None] = mapped_column(String(64))
+    normalization_version: Mapped[str | None] = mapped_column(String(64))
+    quality_rules_version: Mapped[str | None] = mapped_column(String(64))
+    preview_fingerprint_version: Mapped[str | None] = mapped_column(String(64))
+    preview_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    preview_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class DataQualityIssueModel(Base):
@@ -88,4 +97,8 @@ class DataQualityIssueModel(Base):
     message: Mapped[str] = mapped_column(Text, nullable=False)
     raw_value: Mapped[str | None] = mapped_column(Text)
     issue_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    issue_fingerprint_version: Mapped[str] = mapped_column(
+        String(64), nullable=False, default=ISSUE_FINGERPRINT_VERSION
+    )
+    normalized_value: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

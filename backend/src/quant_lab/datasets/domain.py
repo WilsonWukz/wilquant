@@ -1,0 +1,10 @@
+from enum import StrEnum
+
+
+class DatasetVersionStatus(StrEnum):
+    VALIDATING = "VALIDATING"
+    STAGING = "STAGING"
+    FILES_COMMITTING = "FILES_COMMITTING"
+    FILES_COMMITTED = "FILES_COMMITTED"
+    PUBLISHED = "PUBLISHED"
+    FAILED = "FAILED"
