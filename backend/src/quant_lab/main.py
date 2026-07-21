@@ -10,17 +10,20 @@ from sqlalchemy import Engine
 
 from quant_lab import __version__
 from quant_lab.api.data_imports import router as data_imports_router
-from quant_lab.api.datasets import router as datasets_router, publish_router
+from quant_lab.api.datasets import publish_router
+from quant_lab.api.datasets import router as datasets_router
 from quant_lab.api.health import router as health_router
 from quant_lab.core.config import Settings
 from quant_lab.core.logging import configure_logging
+from quant_lab.datasets.publication import PublicationService
+from quant_lab.datasets.query import DatasetQueryService
+from quant_lab.datasets.recovery import PublicationRecoveryService
 from quant_lab.datasets.repository import DatasetRepository
 from quant_lab.db.duckdb import DuckDbStore
 from quant_lab.db.sqlite import create_sqlite_engine
 from quant_lab.health.service import HealthService
 from quant_lab.market_data.repository import MarketDataRepository
 from quant_lab.market_data.service import MarketDataImportService
-from quant_lab.datasets.publication import PublicationService
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +57,15 @@ def create_app(
         app.state.publication_service = PublicationService(
             app.state.dataset_repository, repository, resolved_settings
         )
+        app.state.dataset_query_service = DatasetQueryService(
+            app.state.dataset_repository, resolved_settings.published_directory
+        )
+        app.state.publication_recovery = PublicationRecoveryService(
+            app.state.dataset_repository,
+            resolved_settings.publication_staging_directory,
+            resolved_settings.published_directory,
+        )
+        app.state.publication_recovery.recover()
         if health_service is None:
             app.state.health_service = HealthService(
                 owned_engine,

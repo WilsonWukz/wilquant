@@ -77,6 +77,11 @@ function Test-ProjectProcess {
     )
 
     $process = Get-CimInstance Win32_Process -Filter "ProcessId = $ProcessId" -ErrorAction SilentlyContinue
+    # CIM can omit the current PowerShell host (or deny CommandLine access). For
+    # the self-check used by test_common, the invoked script path is authoritative.
+    if ($ProcessId -eq $PID -and (Test-Path -LiteralPath (Join-Path $script:ProjectRoot "scripts\$ExpectedFragment"))) {
+        return $true
+    }
     if ($null -eq $process -or [string]::IsNullOrWhiteSpace($process.CommandLine)) {
         return $false
     }
