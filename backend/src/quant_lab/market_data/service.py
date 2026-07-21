@@ -5,13 +5,10 @@ from pathlib import Path
 
 from quant_lab.market_data.domain import (
     Bar,
-    IssueSeverity,
-    QualityIssue,
     QualityStatus,
-    ValidationResult,
 )
 from quant_lab.market_data.errors import ImportDataError
-from quant_lab.market_data.normalization import normalize_daily_bar
+from quant_lab.market_data.processing import REQUIRED_FIELDS, process_market_data
 from quant_lab.market_data.providers import (
     DataSourceInput,
     LocalCsvMarketDataProvider,
@@ -21,19 +18,6 @@ from quant_lab.market_data.providers import (
 )
 from quant_lab.market_data.repository import MarketDataRepository
 from quant_lab.market_data.staging import StagedUpload
-from quant_lab.market_data.validation import validate_bars
-
-REQUIRED_FIELDS = {
-    "symbol",
-    "exchange",
-    "trade_date",
-    "open",
-    "high",
-    "low",
-    "close",
-    "volume",
-    "amount",
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,62 +65,26 @@ class MarketDataImportService:
         if source_path.parent != self._import_directory:
             raise ImportDataError("INVALID_SOURCE", "导入来源无效")
         provider = self._provider_for(source_path)
-        raw_batch = provider.load_bars(
-            DataSourceInput(source_path, batch.source_name, batch.source_file_hash)
+        processed = process_market_data(
+            provider=provider,
+            source=DataSourceInput(source_path, batch.source_name, batch.source_file_hash),
+            source_size=source_path.stat().st_size,
+            field_mapping=field_mapping,
+            data_source=batch.provider_name,
+            source_batch_id=batch_id,
         )
-        parsed: list[tuple[int, Bar]] = []
-        parse_issues: list[QualityIssue] = []
-        for raw_row in raw_batch.rows:
-            try:
-                values = {field: raw_row.values[field_mapping[field]] for field in REQUIRED_FIELDS}
-                parsed.append(
-                    (
-                        raw_row.row_number,
-                        normalize_daily_bar(
-                            symbol=values["symbol"],
-                            exchange=values["exchange"],
-                            trade_date=values["trade_date"],
-                            open_value=values["open"],
-                            high_value=values["high"],
-                            low_value=values["low"],
-                            close_value=values["close"],
-                            volume_value=values["volume"],
-                            amount_value=values["amount"],
-                            data_source=batch.provider_name,
-                            source_batch_id=batch_id,
-                        ),
-                    )
-                )
-            except (KeyError, ValueError) as exc:
-                parse_issues.append(
-                    QualityIssue(
-                        raw_row.row_number,
-                        raw_row.values.get(field_mapping.get("symbol", "")),
-                        None,
-                        IssueSeverity.ERROR,
-                        "TYPE_PARSE_ERROR",
-                        str(exc),
-                    )
-                )
-        validation = (
-            validate_bars(parsed)
-            if parsed or not raw_batch.rows
-            else ValidationResult((), ())
-        )
-        all_issues = tuple(parse_issues) + validation.issues
-        rejected_count = len(parse_issues) + validation.rejected_count
         updated = self._repository.complete_preview(
             batch_id,
-            row_count=len(raw_batch.rows),
-            accepted_count=validation.accepted_count,
-            rejected_count=rejected_count,
-            warning_count=validation.warning_count,
-            issues=all_issues,
+            row_count=processed.row_count,
+            accepted_count=processed.accepted_count,
+            rejected_count=processed.rejected_count,
+            warning_count=processed.warning_count,
+            issues=processed.issues,
         )
         samples = tuple(
             self._serialize_bar(row.bar)
-            for row in validation.rows
-            if row.quality_status is not QualityStatus.REJECTED
+            for row in processed.rows
+            if row.bar is not None and row.quality_status is not QualityStatus.REJECTED
         )[: self._preview_rows]
         return PreviewResult(
             batch_id,

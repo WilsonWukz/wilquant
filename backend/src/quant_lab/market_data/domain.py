@@ -109,6 +109,10 @@ class QualityIssue:
     issue_code: str
     message: str
     raw_value: str | None = None
+    normalized_value: object | None = None
+    instrument_id: str | None = None
+    created_at: datetime | None = None
+    exception_text: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
