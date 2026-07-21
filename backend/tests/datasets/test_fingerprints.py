@@ -116,6 +116,15 @@ def test_canonical_json_uses_sorted_utf8_nfc_decimal_and_utc_microseconds() -> N
     )
 
 
+def test_canonical_strings_normalize_all_line_endings_to_lf() -> None:
+    expected = canonical_json_bytes({"text": "first\nsecond\nthird"})
+
+    assert canonical_json_bytes({"text": "first\r\nsecond\rthird"}) == expected
+    assert fingerprint_issue(issue(raw_value="first\r\nsecond")) == fingerprint_issue(
+        issue(raw_value="first\nsecond")
+    )
+
+
 @pytest.mark.parametrize("value", [Decimal("NaN"), Decimal("Infinity"), float("nan")])
 def test_canonical_json_rejects_non_finite_numbers(value: object) -> None:
     with pytest.raises(ValueError, match="finite"):
@@ -159,6 +168,29 @@ def test_preview_fingerprint_excludes_request_batch_and_ingestion_metadata() -> 
     right = preview_payload()
     left.update(batch_id="batch-a", request_id="request-a", ingested_at="yesterday")
     right.update(batch_id="batch-b", request_id="request-b", ingested_at="today")
+
+    assert fingerprint_preview(left) == fingerprint_preview(right)
+
+
+@pytest.mark.parametrize(
+    "metadata_key",
+    [
+        "database_id",
+        "database_auto_id",
+        "temporary_path",
+        "temporary_file_path",
+        "batch_execution_time",
+        "execution_timestamp",
+        "log_timestamp",
+        "processing_duration_ms",
+        "row_processing_duration_ms",
+    ],
+)
+def test_preview_fingerprint_excludes_formal_runtime_metadata(metadata_key: str) -> None:
+    left = preview_payload()
+    right = preview_payload()
+    left["runtime"] = {metadata_key: "left"}
+    right["runtime"] = {metadata_key: "right"}
 
     assert fingerprint_preview(left) == fingerprint_preview(right)
 

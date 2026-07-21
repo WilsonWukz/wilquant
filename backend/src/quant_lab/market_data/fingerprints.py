@@ -13,7 +13,22 @@ from enum import Enum
 from quant_lab.market_data.domain import QualityIssue
 from quant_lab.market_data.versions import ISSUE_FINGERPRINT_VERSION
 
-_PREVIEW_EXCLUDED_KEYS = frozenset({"batch_id", "request_id", "ingested_at"})
+_PREVIEW_EXCLUDED_KEYS = frozenset(
+    {
+        "batch_id",
+        "request_id",
+        "ingested_at",
+        "database_id",
+        "database_auto_id",
+        "temporary_path",
+        "temporary_file_path",
+        "batch_execution_time",
+        "execution_timestamp",
+        "log_timestamp",
+        "processing_duration_ms",
+        "row_processing_duration_ms",
+    }
+)
 
 
 def _decimal_text(value: Decimal) -> str:
@@ -29,7 +44,8 @@ def _canonicalize(value: object, *, excluded_keys: frozenset[str] = frozenset())
     if value is None or isinstance(value, bool | int):
         return value
     if isinstance(value, str):
-        return unicodedata.normalize("NFC", value)
+        normalized_lines = value.replace("\r\n", "\n").replace("\r", "\n")
+        return unicodedata.normalize("NFC", normalized_lines)
     if isinstance(value, Decimal):
         return _decimal_text(value)
     if isinstance(value, float):

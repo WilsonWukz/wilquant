@@ -4,9 +4,13 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from quant_lab.market_data import normalization
+from quant_lab.market_data import processing as processing_module
+from quant_lab.market_data.domain import ValidationResult
 from quant_lab.market_data.processing import process_market_data
 from quant_lab.market_data.providers import (
     DataSourceInput,
+    LocalCsvMarketDataProvider,
+    LocalParquetMarketDataProvider,
     RawBarBatch,
     RawRow,
     SyntheticDataProvider,
@@ -50,10 +54,10 @@ def test_processing_returns_immutable_rows_issues_statistics_and_fingerprint() -
     assert result.warning_count == 0
     assert result.rows[0].bar is not None
     assert result.rows[0].quality_status.value == "REJECTED"
-    assert result.issues[0].issue_code == "HIGH_BELOW_LOW"
-    assert result.issues[0].instrument_id == "600000.XSHG"
-    assert result.issues[0].raw_value == "9"
-    assert str(result.issues[0].normalized_value) == "9"
+    issue = next(item for item in result.issues if item.issue_code == "HIGH_BELOW_LOW")
+    assert issue.instrument_id == "600000.XSHG"
+    assert issue.raw_value == "9"
+    assert str(issue.normalized_value) == "9"
     assert len(result.preview_fingerprint) == 64
 
 
@@ -98,6 +102,49 @@ def test_processing_covers_mapping_and_rule_versions() -> None:
     assert baseline.preview_fingerprint != mapped.preview_fingerprint
     assert baseline.preview_fingerprint != changed_version.preview_fingerprint
     assert baseline.accepted_count != mapped.accepted_count or baseline.rows != mapped.rows
+
+
+def test_processing_uses_the_concrete_provider_version() -> None:
+    baseline_provider = SyntheticDataProvider()
+
+    class NextSyntheticProvider(SyntheticDataProvider):
+        version = "synthetic@2"
+
+    assert baseline_provider.version == "synthetic@1"
+    assert LocalCsvMarketDataProvider.version == "local-csv@1"
+    assert LocalParquetMarketDataProvider.version == "local-parquet@1"
+    assert process(provider=baseline_provider).preview_fingerprint != process(
+        provider=NextSyntheticProvider()
+    ).preview_fingerprint
+
+
+def test_preview_envelope_covers_issue_fingerprint_version_without_issues(monkeypatch) -> None:
+    baseline = process()
+
+    monkeypatch.setattr(
+        processing_module,
+        "ISSUE_FINGERPRINT_VERSION",
+        "quality-issue-sha256@3",
+    )
+
+    assert baseline.issues == ()
+    assert baseline.preview_fingerprint != process().preview_fingerprint
+
+
+def test_processing_canonically_sorts_equivalent_validator_issues(monkeypatch) -> None:
+    baseline = process("high_below_low")
+    validate = processing_module.validate_bars
+
+    def validate_in_reverse(indexed_bars):
+        result = validate(indexed_bars)
+        return ValidationResult(result.rows, tuple(reversed(result.issues)))
+
+    monkeypatch.setattr(processing_module, "validate_bars", validate_in_reverse)
+    reordered = process("high_below_low")
+
+    assert reordered.issues == baseline.issues
+    assert reordered.rows[0].issue_fingerprints == baseline.rows[0].issue_fingerprints
+    assert reordered.preview_fingerprint == baseline.preview_fingerprint
 
 
 def test_parse_rejection_is_included_without_empty_file_issue() -> None:

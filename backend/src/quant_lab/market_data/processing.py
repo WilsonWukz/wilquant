@@ -19,9 +19,9 @@ from quant_lab.market_data.normalization import normalize_daily_bar, normalize_i
 from quant_lab.market_data.providers import DataSourceInput, MarketDataProvider
 from quant_lab.market_data.validation import validate_bars
 from quant_lab.market_data.versions import (
+    ISSUE_FINGERPRINT_VERSION,
     NORMALIZATION_RULES_VERSION,
     PREVIEW_FINGERPRINT_VERSION,
-    PROVIDER_VERSION,
     QUALITY_RULES_VERSION,
     SCHEMA_VERSION,
 )
@@ -68,6 +68,15 @@ def _bar_payload(bar: Bar) -> dict[str, object]:
     }
 
 
+def _issue_sort_key(issue: QualityIssue) -> tuple[str, str, str, str]:
+    return (
+        issue.severity.value,
+        issue.issue_code,
+        issue.field_name or "",
+        fingerprint_issue(issue),
+    )
+
+
 def process_market_data(
     *,
     provider: MarketDataProvider,
@@ -76,7 +85,6 @@ def process_market_data(
     field_mapping: dict[str, str],
     data_source: str,
     source_batch_id: str,
-    provider_version: str = PROVIDER_VERSION,
     schema_version: str = SCHEMA_VERSION,
     normalization_version: str = NORMALIZATION_RULES_VERSION,
     quality_rules_version: str = QUALITY_RULES_VERSION,
@@ -156,7 +164,7 @@ def process_market_data(
         )
         for issue in (() if validation is None else validation.issues)
     )
-    issues = tuple(parse_issues) + tuple(validation_issues)
+    issues = tuple(sorted((*parse_issues, *validation_issues), key=_issue_sort_key))
     issues_by_row: dict[int, list[QualityIssue]] = {}
     for issue in issues:
         if issue.row_number is not None:
@@ -167,7 +175,9 @@ def process_market_data(
     fingerprint_rows: list[dict[str, object]] = []
     for raw_row in raw_batch.rows:
         validated = validated_by_row.get(raw_row.row_number)
-        row_issues = tuple(issues_by_row.get(raw_row.row_number, ()))
+        row_issues = tuple(
+            sorted(issues_by_row.get(raw_row.row_number, ()), key=_issue_sort_key)
+        )
         issue_hashes = tuple(fingerprint_issue(item) for item in row_issues)
         if validated is None:
             processed = ProcessedRow(raw_row.row_number, None, QualityStatus.REJECTED, issue_hashes)
@@ -199,8 +209,12 @@ def process_market_data(
     }
     payload: dict[str, object] = {
         "fingerprint_version": PREVIEW_FINGERPRINT_VERSION,
+        "fingerprint_versions": {
+            "preview": PREVIEW_FINGERPRINT_VERSION,
+            "issue": ISSUE_FINGERPRINT_VERSION,
+        },
         "source": {"sha256": source.sha256, "size": source_size},
-        "provider": {"name": provider.name, "version": provider_version},
+        "provider": {"name": provider.name, "version": provider.version},
         "schema_version": schema_version,
         "normalization_version": normalization_version,
         "quality_rules_version": quality_rules_version,

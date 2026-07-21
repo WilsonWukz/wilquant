@@ -10,6 +10,11 @@ from typing import Protocol
 import duckdb
 
 from quant_lab.market_data.errors import ImportDataError
+from quant_lab.market_data.versions import (
+    LOCAL_CSV_PROVIDER_VERSION,
+    LOCAL_PARQUET_PROVIDER_VERSION,
+    SYNTHETIC_PROVIDER_VERSION,
+)
 
 STANDARD_FIELDS = (
     "symbol",
@@ -72,6 +77,9 @@ class MarketDataProvider(Protocol):
     @property
     def name(self) -> str: ...
 
+    @property
+    def version(self) -> str: ...
+
     def inspect(self, source: DataSourceInput) -> SourceInspection: ...
 
     def load_bars(self, source: DataSourceInput) -> RawBarBatch: ...
@@ -93,6 +101,7 @@ def _suggest_mapping(columns: tuple[str, ...]) -> dict[str, str]:
 
 class LocalCsvMarketDataProvider:
     name = "local_csv"
+    version = LOCAL_CSV_PROVIDER_VERSION
 
     def _read(self, source: DataSourceInput) -> tuple[tuple[str, ...], tuple[RawRow, ...]]:
         try:
@@ -140,6 +149,7 @@ def _stringify(value: object) -> str:
 
 class LocalParquetMarketDataProvider:
     name = "local_parquet"
+    version = LOCAL_PARQUET_PROVIDER_VERSION
 
     def _read(self, source: DataSourceInput) -> tuple[tuple[str, ...], tuple[RawRow, ...]]:
         connection = duckdb.connect()
@@ -172,6 +182,7 @@ class LocalParquetMarketDataProvider:
 
 class SyntheticDataProvider:
     name = "synthetic"
+    version = SYNTHETIC_PROVIDER_VERSION
 
     def __init__(self, case: str = "normal") -> None:
         self._case = case
