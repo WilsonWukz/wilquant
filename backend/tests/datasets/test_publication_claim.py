@@ -33,6 +33,7 @@ from quant_lab.market_data.persistence import (
     DataSourceModel,
     ImportBatchModel,
 )
+from quant_lab.market_data.versions import LOCAL_CSV_PROVIDER_VERSION
 
 NOW = datetime(2026, 7, 21, 9, 0, tzinfo=UTC)
 PREVIEW_FINGERPRINT = "a" * 64
@@ -141,7 +142,7 @@ def insert_preview(
                 schema_version="market-bar@1",
                 source_file_size=128,
                 field_mapping_json=field_mapping_json,
-                provider_version="local-csv@1",
+                provider_version=LOCAL_CSV_PROVIDER_VERSION,
                 normalization_version="a-share-daily-normalization@1",
                 quality_rules_version="a-share-daily-quality@1",
                 preview_fingerprint_version="preview-sha256@1",
