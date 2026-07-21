@@ -5,6 +5,21 @@ from datetime import date, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 
+REQUIRED_MARKET_BAR_FIELDS = frozenset(
+    {
+        "symbol",
+        "exchange",
+        "trade_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "amount",
+    }
+)
+MARKET_BAR_FIELD_MAPPING_WHITELIST = REQUIRED_MARKET_BAR_FIELDS
+
 
 class Exchange(StrEnum):
     XSHG = "XSHG"
@@ -199,6 +214,13 @@ class PreviewRecord:
             )
         ):
             raise ValueError("Preview field mapping must be a non-empty string map")
+        mapping_fields = frozenset(field_mapping)
+        missing_fields = REQUIRED_MARKET_BAR_FIELDS - mapping_fields
+        if missing_fields:
+            raise ValueError("Preview field mapping is missing required market-bar fields")
+        unsupported_fields = mapping_fields - MARKET_BAR_FIELD_MAPPING_WHITELIST
+        if unsupported_fields:
+            raise ValueError("Preview field mapping contains unsupported fields")
         if canonical_json_bytes(field_mapping).decode("utf-8") != self.field_mapping_json:
             raise ValueError("Preview field mapping must use canonical JSON key ordering")
 

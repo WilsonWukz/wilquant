@@ -1,3 +1,4 @@
+import json
 import logging
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -213,14 +214,23 @@ async def test_corrupt_replay_metadata_is_not_publish_eligible(
     ).status_code == 200
     settings = Settings(project_root=tmp_path, runtime_root=tmp_path / "runtime")
     engine = create_sqlite_engine(settings)
+    incomplete_mapping = dict(MAPPING)
+    del incomplete_mapping["amount"]
     with engine.begin() as connection:
         connection.execute(
             text(
-                "UPDATE import_batches SET preview_fingerprint = 'broken', "
-                "field_mapping_json = '{\"high\": \"high\", \"close\": \"close\"}', "
-                "accepted_count = 0 WHERE batch_id = :batch_id"
+                "UPDATE import_batches SET field_mapping_json = :field_mapping_json "
+                "WHERE batch_id = :batch_id"
             ),
-            {"batch_id": batch_id},
+            {
+                "batch_id": batch_id,
+                "field_mapping_json": json.dumps(
+                    incomplete_mapping,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ),
+            },
         )
     engine.dispose()
 
@@ -270,6 +280,22 @@ async def test_preview_rejects_publishing_batch_without_mutation(
     assert after.json()["status"] == "PUBLISHING"
     assert after.json()["preview_fingerprint"] == first.json()["preview_fingerprint"]
     assert after_issues.json() == first_issues.json()
+
+
+async def test_preview_rejects_fields_outside_the_mapping_whitelist(
+    import_client: AsyncClient,
+) -> None:
+    inspection = await inspect_csv(import_client)
+    mapping = {**MAPPING, "unexpected": "unexpected_source"}
+
+    response = await import_client.post(
+        "/api/v1/data/imports/preview",
+        json={"batch_id": inspection.json()["batch_id"], "field_mapping": mapping},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "FIELD_MAPPING_ERROR"
+    assert "unexpected_source" not in response.text
 
 
 async def test_all_parse_failures_are_not_reported_as_an_empty_file(

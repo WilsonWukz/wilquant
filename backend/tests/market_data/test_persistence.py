@@ -33,11 +33,30 @@ from quant_lab.market_data.versions import (
     SCHEMA_VERSION,
 )
 
+REQUIRED_MAPPING = {
+    field: field
+    for field in (
+        "symbol",
+        "exchange",
+        "trade_date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "amount",
+    )
+}
+
+
+def _canonical_mapping(mapping: dict[str, str]) -> str:
+    return json.dumps(mapping, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
 
 def _valid_preview_record(*, issues: tuple[QualityIssue, ...] = ()) -> PreviewRecord:
     return PreviewRecord(
         source_file_size=123,
-        field_mapping_json='{"close":"close","high":"high"}',
+        field_mapping_json=_canonical_mapping(REQUIRED_MAPPING),
         provider_version="local-csv@1",
         schema_version=SCHEMA_VERSION,
         normalization_version=NORMALIZATION_RULES_VERSION,
@@ -75,6 +94,79 @@ def _valid_preview_record(*, issues: tuple[QualityIssue, ...] = ()) -> PreviewRe
 def test_preview_record_rejects_invalid_replay_metadata(updates: dict[str, object]) -> None:
     with pytest.raises(ValueError):
         replace(_valid_preview_record(), **updates)
+
+
+@pytest.mark.parametrize("missing_field", tuple(REQUIRED_MAPPING))
+def test_preview_record_rejects_each_missing_required_mapping_field(
+    missing_field: str,
+) -> None:
+    incomplete_mapping = dict(REQUIRED_MAPPING)
+    del incomplete_mapping[missing_field]
+
+    with pytest.raises(ValueError, match="required market-bar fields"):
+        replace(
+            _valid_preview_record(),
+            field_mapping_json=_canonical_mapping(incomplete_mapping),
+        )
+
+
+def test_repository_revalidates_required_mapping_before_any_write(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("QUANT_LAB_PROJECT_ROOT", str(tmp_path))
+    settings = Settings(project_root=tmp_path)
+    command.upgrade(Config("backend/alembic.ini"), "head")
+    engine = create_sqlite_engine(settings)
+    now = datetime.now(UTC)
+    with Session(engine) as session:
+        source = DataSourceModel(
+            source_id="source-invalid-mapping",
+            identifier="local_csv",
+            name="invalid-mapping.csv",
+            source_type="LOCAL_CSV",
+            is_local=True,
+            version="1",
+            original_file="invalid-mapping.csv",
+            created_at=now,
+        )
+        batch = ImportBatchModel(
+            batch_id="batch-invalid-mapping",
+            data_source_id=source.source_id,
+            provider_name="local_csv",
+            source_name="invalid-mapping.csv",
+            source_file="invalid-mapping.csv",
+            source_file_hash="8" * 64,
+            requested_at=now,
+            status=ImportBatchStatus.PENDING.value,
+            row_count=0,
+            accepted_count=0,
+            rejected_count=0,
+            warning_count=0,
+            schema_version="1",
+        )
+        session.add_all([source, batch])
+        session.commit()
+
+    incomplete_mapping = dict(REQUIRED_MAPPING)
+    del incomplete_mapping["amount"]
+    invalid_preview = _valid_preview_record()
+    object.__setattr__(
+        invalid_preview,
+        "field_mapping_json",
+        _canonical_mapping(incomplete_mapping),
+    )
+    repository = MarketDataRepository(engine)
+
+    with pytest.raises(ValueError, match="required market-bar fields"):
+        repository.complete_preview("batch-invalid-mapping", invalid_preview)
+
+    unchanged = repository.get_batch("batch-invalid-mapping")
+    assert unchanged.status == ImportBatchStatus.PENDING.value
+    assert unchanged.field_mapping_json is None
+    assert unchanged.preview_fingerprint is None
+    assert repository.list_issues("batch-invalid-mapping") == ()
+    engine.dispose()
 
 
 def test_market_data_migration_creates_metadata_tables_only(
@@ -188,7 +280,7 @@ def test_repeated_preview_replaces_quality_issues_transactionally(
     completed_at = datetime.now(UTC)
     preview = PreviewRecord(
         source_file_size=123,
-        field_mapping_json='{"close":"close","high":"high"}',
+        field_mapping_json=_canonical_mapping(REQUIRED_MAPPING),
         provider_version="local-csv@1",
         schema_version=SCHEMA_VERSION,
         normalization_version=NORMALIZATION_RULES_VERSION,
@@ -209,7 +301,7 @@ def test_repeated_preview_replaces_quality_issues_transactionally(
     assert updated.rejected_count == 1
     assert updated.warning_count == 0
     assert updated.source_file_size == 123
-    assert updated.field_mapping_json == '{"close":"close","high":"high"}'
+    assert updated.field_mapping_json == _canonical_mapping(REQUIRED_MAPPING)
     assert updated.provider_version == "local-csv@1"
     assert updated.schema_version == SCHEMA_VERSION
     assert updated.normalization_version == NORMALIZATION_RULES_VERSION
@@ -277,12 +369,7 @@ def test_complete_preview_rolls_back_metadata_and_issues_together(
     completed_at = datetime.now(UTC)
     preview = PreviewRecord(
         source_file_size=456,
-        field_mapping_json=json.dumps(
-            {"high": "source_high", "symbol": "source_symbol"},
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ),
+        field_mapping_json=_canonical_mapping(REQUIRED_MAPPING),
         provider_version="local-csv@1",
         schema_version=SCHEMA_VERSION,
         normalization_version=NORMALIZATION_RULES_VERSION,

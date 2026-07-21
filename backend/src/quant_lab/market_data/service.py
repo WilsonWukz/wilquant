@@ -5,13 +5,15 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from quant_lab.market_data.domain import (
+    MARKET_BAR_FIELD_MAPPING_WHITELIST,
+    REQUIRED_MARKET_BAR_FIELDS,
     Bar,
     PreviewRecord,
     QualityStatus,
 )
 from quant_lab.market_data.errors import ImportDataError
 from quant_lab.market_data.fingerprints import canonical_json_bytes
-from quant_lab.market_data.processing import REQUIRED_FIELDS, process_market_data
+from quant_lab.market_data.processing import process_market_data
 from quant_lab.market_data.providers import (
     DataSourceInput,
     LocalCsvMarketDataProvider,
@@ -66,9 +68,12 @@ class MarketDataImportService:
         return InspectionResult(batch.batch_id, inspection, upload.size)
 
     def preview(self, batch_id: str, field_mapping: dict[str, str]) -> PreviewResult:
-        missing = REQUIRED_FIELDS - field_mapping.keys()
-        if missing:
-            raise ImportDataError("FIELD_MAPPING_ERROR", "缺少必填字段映射")
+        missing = REQUIRED_MARKET_BAR_FIELDS - field_mapping.keys()
+        unsupported = field_mapping.keys() - MARKET_BAR_FIELD_MAPPING_WHITELIST
+        if missing or unsupported:
+            raise ImportDataError(
+                "FIELD_MAPPING_ERROR", "字段映射缺少必填字段或包含不支持字段"
+            )
         batch = self._repository.get_batch(batch_id)
         source_path = (self._import_directory / batch.source_file).resolve()
         if source_path.parent != self._import_directory:

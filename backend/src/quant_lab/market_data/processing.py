@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 
 from quant_lab.market_data.domain import (
+    MARKET_BAR_FIELD_MAPPING_WHITELIST,
+    REQUIRED_MARKET_BAR_FIELDS,
     Bar,
     IssueSeverity,
     QualityIssue,
@@ -26,9 +28,7 @@ from quant_lab.market_data.versions import (
     SCHEMA_VERSION,
 )
 
-REQUIRED_FIELDS = frozenset(
-    {"symbol", "exchange", "trade_date", "open", "high", "low", "close", "volume", "amount"}
-)
+REQUIRED_FIELDS = REQUIRED_MARKET_BAR_FIELDS
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +92,9 @@ def process_market_data(
     missing = REQUIRED_FIELDS - field_mapping.keys()
     if missing:
         raise ValueError("Missing required field mapping")
+    unsupported = field_mapping.keys() - MARKET_BAR_FIELD_MAPPING_WHITELIST
+    if unsupported:
+        raise ValueError("unsupported field mapping")
 
     raw_batch = provider.load_bars(source)
     parsed: list[tuple[int, Bar]] = []

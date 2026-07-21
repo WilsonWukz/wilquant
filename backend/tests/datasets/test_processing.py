@@ -108,6 +108,13 @@ def test_processing_covers_mapping_and_rule_versions() -> None:
     assert baseline.accepted_count != mapped.accepted_count or baseline.rows != mapped.rows
 
 
+def test_processing_rejects_fields_outside_the_mapping_whitelist() -> None:
+    mapping = {**MAPPING, "unexpected": "unexpected_source"}
+
+    with pytest.raises(ValueError, match="unsupported field mapping"):
+        process(field_mapping=mapping)
+
+
 def test_processing_uses_the_concrete_provider_version() -> None:
     baseline_provider = SyntheticDataProvider()
 
