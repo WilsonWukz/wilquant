@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from sqlalchemy import Engine, delete, select
+from sqlalchemy import Engine, delete, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -21,6 +21,16 @@ from quant_lab.market_data.versions import ISSUE_FINGERPRINT_VERSION
 
 
 class MarketDataRepository:
+    # FAILED/STALE restart normalization; PUBLISH_FAILED must retry publication/recovery.
+    _PREVIEWABLE_STATUSES = frozenset(
+        {
+            ImportBatchStatus.PENDING.value,
+            ImportBatchStatus.PREVIEW_READY.value,
+            ImportBatchStatus.FAILED.value,
+            ImportBatchStatus.STALE.value,
+        }
+    )
+
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
 
@@ -86,36 +96,52 @@ class MarketDataRepository:
         batch_id: str,
         preview: PreviewRecord,
     ) -> ImportBatchModel:
-        if (
-            preview.preview_completed_at.tzinfo is None
-            or preview.preview_completed_at.utcoffset() is None
-        ):
-            raise ValueError("preview_completed_at must be timezone-aware")
-        preview_completed_at = preview.preview_completed_at.astimezone(UTC)
+        preview.validate()
+        preview_completed_at = preview.preview_completed_at
         canonical_issues = {
             fingerprint_issue(issue): issue
             for issue in preview.issues
         }
         with Session(self._engine) as session:
-            batch = session.get(ImportBatchModel, batch_id)
-            if batch is None:
-                raise ImportDataError("BATCH_NOT_FOUND", "导入批次不存在")
-            batch.status = ImportBatchStatus.PREVIEW_READY.value
-            batch.started_at = batch.started_at or preview_completed_at
-            batch.completed_at = preview_completed_at
-            batch.row_count = preview.row_count
-            batch.accepted_count = preview.accepted_count
-            batch.rejected_count = preview.rejected_count
-            batch.warning_count = preview.warning_count
-            batch.source_file_size = preview.source_file_size
-            batch.field_mapping_json = preview.field_mapping_json
-            batch.provider_version = preview.provider_version
-            batch.schema_version = preview.schema_version
-            batch.normalization_version = preview.normalization_version
-            batch.quality_rules_version = preview.quality_rules_version
-            batch.preview_fingerprint_version = preview.preview_fingerprint_version
-            batch.preview_fingerprint = preview.preview_fingerprint
-            batch.preview_completed_at = preview_completed_at
+            updated_batch_id = session.scalar(
+                update(ImportBatchModel)
+                .where(
+                    ImportBatchModel.batch_id == batch_id,
+                    ImportBatchModel.status.in_(self._PREVIEWABLE_STATUSES),
+                )
+                .values(
+                    status=ImportBatchStatus.PREVIEW_READY.value,
+                    started_at=func.coalesce(
+                        ImportBatchModel.started_at, preview_completed_at
+                    ),
+                    completed_at=preview_completed_at,
+                    row_count=preview.row_count,
+                    accepted_count=preview.accepted_count,
+                    rejected_count=preview.rejected_count,
+                    warning_count=preview.warning_count,
+                    source_file_size=preview.source_file_size,
+                    field_mapping_json=preview.field_mapping_json,
+                    provider_version=preview.provider_version,
+                    schema_version=preview.schema_version,
+                    normalization_version=preview.normalization_version,
+                    quality_rules_version=preview.quality_rules_version,
+                    preview_fingerprint_version=preview.preview_fingerprint_version,
+                    preview_fingerprint=preview.preview_fingerprint,
+                    preview_completed_at=preview_completed_at,
+                )
+                .returning(ImportBatchModel.batch_id)
+            )
+            if updated_batch_id is None:
+                exists = session.scalar(
+                    select(ImportBatchModel.batch_id).where(
+                        ImportBatchModel.batch_id == batch_id
+                    )
+                )
+                if exists is None:
+                    raise ImportDataError("BATCH_NOT_FOUND", "导入批次不存在")
+                raise ImportDataError(
+                    "PREVIEW_STATE_INVALID", "当前批次状态不允许预览"
+                )
             session.execute(
                 delete(DataQualityIssueModel).where(
                     DataQualityIssueModel.batch_id == batch_id
@@ -144,7 +170,8 @@ class MarketDataRepository:
                 for fingerprint, issue in sorted(canonical_issues.items())
             )
             session.commit()
-            session.refresh(batch)
+            batch = session.get(ImportBatchModel, batch_id)
+            assert batch is not None
             self._restore_preview_utc(batch)
             session.expunge(batch)
             return batch

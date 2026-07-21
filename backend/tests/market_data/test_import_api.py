@@ -199,6 +199,79 @@ async def test_legacy_preview_ready_batch_requires_a_new_preview(
     assert str(tmp_path) not in response.text
 
 
+async def test_corrupt_replay_metadata_is_not_publish_eligible(
+    import_client: AsyncClient,
+    tmp_path: Path,
+) -> None:
+    inspection = await inspect_csv(import_client)
+    batch_id = inspection.json()["batch_id"]
+    assert (
+        await import_client.post(
+            "/api/v1/data/imports/preview",
+            json={"batch_id": batch_id, "field_mapping": MAPPING},
+        )
+    ).status_code == 200
+    settings = Settings(project_root=tmp_path, runtime_root=tmp_path / "runtime")
+    engine = create_sqlite_engine(settings)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE import_batches SET preview_fingerprint = 'broken', "
+                "field_mapping_json = '{\"high\": \"high\", \"close\": \"close\"}', "
+                "accepted_count = 0 WHERE batch_id = :batch_id"
+            ),
+            {"batch_id": batch_id},
+        )
+    engine.dispose()
+
+    response = await import_client.get(f"/api/v1/data/imports/{batch_id}")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "PREVIEW_READY"
+    assert response.json()["publish_eligibility"] == "PREVIEW_REQUIRED"
+    assert "runtime" not in response.text
+    assert str(tmp_path) not in response.text
+
+
+async def test_preview_rejects_publishing_batch_without_mutation(
+    import_client: AsyncClient,
+    tmp_path: Path,
+) -> None:
+    inspection = await inspect_csv(import_client)
+    batch_id = inspection.json()["batch_id"]
+    first = await import_client.post(
+        "/api/v1/data/imports/preview",
+        json={"batch_id": batch_id, "field_mapping": MAPPING},
+    )
+    first_issues = await import_client.get(f"/api/v1/data/imports/{batch_id}/issues")
+    settings = Settings(project_root=tmp_path, runtime_root=tmp_path / "runtime")
+    engine = create_sqlite_engine(settings)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE import_batches SET status = 'PUBLISHING' WHERE batch_id = :batch_id"
+            ),
+            {"batch_id": batch_id},
+        )
+    engine.dispose()
+
+    response = await import_client.post(
+        "/api/v1/data/imports/preview",
+        json={"batch_id": batch_id, "field_mapping": MAPPING},
+    )
+    after = await import_client.get(f"/api/v1/data/imports/{batch_id}")
+    after_issues = await import_client.get(f"/api/v1/data/imports/{batch_id}/issues")
+
+    assert response.status_code == 400
+    assert response.json()["error_code"] == "PREVIEW_STATE_INVALID"
+    assert response.json()["message"]
+    assert "runtime" not in response.text
+    assert str(tmp_path) not in response.text
+    assert after.json()["status"] == "PUBLISHING"
+    assert after.json()["preview_fingerprint"] == first.json()["preview_fingerprint"]
+    assert after_issues.json() == first_issues.json()
+
+
 async def test_all_parse_failures_are_not_reported_as_an_empty_file(
     import_client: AsyncClient,
 ) -> None:

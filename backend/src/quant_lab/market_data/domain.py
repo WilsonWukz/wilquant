@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 
@@ -37,6 +37,10 @@ class ImportBatchStatus(StrEnum):
     PREVIEW_READY = "PREVIEW_READY"
     FAILED = "FAILED"
     CANCELLED = "CANCELLED"
+    PUBLISHING = "PUBLISHING"
+    PUBLISHED = "PUBLISHED"
+    PUBLISH_FAILED = "PUBLISH_FAILED"
+    STALE = "STALE"
 
 
 class IssueSeverity(StrEnum):
@@ -133,6 +137,70 @@ class PreviewRecord:
     preview_fingerprint: str
     preview_completed_at: datetime
     issues: tuple[QualityIssue, ...]
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        """Reject replay metadata that cannot safely gate a future publication."""
+        counts = (
+            self.source_file_size,
+            self.row_count,
+            self.accepted_count,
+            self.rejected_count,
+            self.warning_count,
+        )
+        if any(
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+            for value in counts
+        ):
+            raise ValueError("Preview sizes and counts must be non-negative integers")
+        if self.accepted_count + self.rejected_count != self.row_count:
+            raise ValueError("Preview accepted and rejected counts must equal row count")
+        if self.warning_count > self.accepted_count:
+            raise ValueError("Preview warning count cannot exceed accepted count")
+        versions = (
+            self.provider_version,
+            self.schema_version,
+            self.normalization_version,
+            self.quality_rules_version,
+            self.preview_fingerprint_version,
+        )
+        if any(not isinstance(value, str) or not value.strip() for value in versions):
+            raise ValueError("Preview Provider and rule versions must be non-empty")
+        if (
+            len(self.preview_fingerprint) != 64
+            or any(character not in "0123456789abcdef" for character in self.preview_fingerprint)
+        ):
+            raise ValueError("Preview fingerprint must be lowercase SHA-256 hex")
+        if (
+            self.preview_completed_at.tzinfo is None
+            or self.preview_completed_at.utcoffset() != timedelta(0)
+        ):
+            raise ValueError("Preview completion time must be UTC-aware")
+
+        import json
+
+        from quant_lab.market_data.fingerprints import canonical_json_bytes
+
+        try:
+            field_mapping = json.loads(self.field_mapping_json)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ValueError("Preview field mapping must be canonical JSON") from exc
+        if (
+            not isinstance(field_mapping, dict)
+            or not field_mapping
+            or any(
+                not isinstance(key, str)
+                or not key
+                or not isinstance(value, str)
+                or not value
+                for key, value in field_mapping.items()
+            )
+        ):
+            raise ValueError("Preview field mapping must be a non-empty string map")
+        if canonical_json_bytes(field_mapping).decode("utf-8") != self.field_mapping_json:
+            raise ValueError("Preview field mapping must use canonical JSON key ordering")
 
 
 @dataclass(frozen=True, slots=True)

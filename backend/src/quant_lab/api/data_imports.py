@@ -16,6 +16,7 @@ from quant_lab.api.data_schemas import (
     ImportPreviewRequest,
     ImportPreviewResponse,
 )
+from quant_lab.market_data.domain import PreviewRecord
 from quant_lab.market_data.errors import ImportDataError
 from quant_lab.market_data.repository import MarketDataRepository
 from quant_lab.market_data.staging import ControlledUploadStore, StagedUpload
@@ -83,21 +84,48 @@ def _batch_response(batch: object) -> ImportBatchResponse:
     from quant_lab.market_data.persistence import ImportBatchModel
 
     assert isinstance(batch, ImportBatchModel)
-    replay_metadata = (
-        batch.source_file_size,
-        batch.field_mapping_json,
-        batch.provider_version,
-        batch.normalization_version,
-        batch.quality_rules_version,
-        batch.preview_fingerprint_version,
-        batch.preview_fingerprint,
-        batch.preview_completed_at,
-    )
-    publish_eligibility = (
-        "ELIGIBLE"
-        if batch.status == "PREVIEW_READY" and all(item is not None for item in replay_metadata)
-        else "PREVIEW_REQUIRED"
-    )
+    source_file_size = batch.source_file_size
+    field_mapping_json = batch.field_mapping_json
+    provider_version = batch.provider_version
+    normalization_version = batch.normalization_version
+    quality_rules_version = batch.quality_rules_version
+    preview_fingerprint_version = batch.preview_fingerprint_version
+    preview_fingerprint = batch.preview_fingerprint
+    preview_completed_at = batch.preview_completed_at
+    if (
+        batch.status != "PREVIEW_READY"
+        or source_file_size is None
+        or field_mapping_json is None
+        or provider_version is None
+        or normalization_version is None
+        or quality_rules_version is None
+        or preview_fingerprint_version is None
+        or preview_fingerprint is None
+        or preview_completed_at is None
+    ):
+        publish_eligibility = "PREVIEW_REQUIRED"
+    else:
+        try:
+            PreviewRecord(
+                source_file_size=source_file_size,
+                field_mapping_json=field_mapping_json,
+                provider_version=provider_version,
+                schema_version=batch.schema_version,
+                normalization_version=normalization_version,
+                quality_rules_version=quality_rules_version,
+                preview_fingerprint_version=preview_fingerprint_version,
+                row_count=batch.row_count,
+                accepted_count=batch.accepted_count,
+                rejected_count=batch.rejected_count,
+                warning_count=batch.warning_count,
+                preview_fingerprint=preview_fingerprint,
+                preview_completed_at=preview_completed_at,
+                issues=(),
+            )
+        except (TypeError, ValueError):
+            publish_eligibility = "PREVIEW_REQUIRED"
+        else:
+            publish_eligibility = "ELIGIBLE"
     return ImportBatchResponse(
         batch_id=batch.batch_id,
         provider_name=batch.provider_name,

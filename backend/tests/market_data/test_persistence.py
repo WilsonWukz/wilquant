@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from quant_lab.market_data.domain import (
     PreviewRecord,
     QualityIssue,
 )
+from quant_lab.market_data.errors import ImportDataError
 from quant_lab.market_data.persistence import (
     DataQualityIssueModel,
     DataSourceModel,
@@ -30,6 +32,49 @@ from quant_lab.market_data.versions import (
     QUALITY_RULES_VERSION,
     SCHEMA_VERSION,
 )
+
+
+def _valid_preview_record(*, issues: tuple[QualityIssue, ...] = ()) -> PreviewRecord:
+    return PreviewRecord(
+        source_file_size=123,
+        field_mapping_json='{"close":"close","high":"high"}',
+        provider_version="local-csv@1",
+        schema_version=SCHEMA_VERSION,
+        normalization_version=NORMALIZATION_RULES_VERSION,
+        quality_rules_version=QUALITY_RULES_VERSION,
+        preview_fingerprint_version=PREVIEW_FINGERPRINT_VERSION,
+        row_count=1,
+        accepted_count=1,
+        rejected_count=0,
+        warning_count=0,
+        preview_fingerprint="d" * 64,
+        preview_completed_at=datetime.now(UTC),
+        issues=issues,
+    )
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"source_file_size": -1},
+        {"row_count": -1},
+        {"accepted_count": 0, "rejected_count": 0},
+        {"accepted_count": 1, "warning_count": 2},
+        {"preview_fingerprint": "not-a-sha256"},
+        {"preview_fingerprint": "A" * 64},
+        {"provider_version": " "},
+        {"schema_version": ""},
+        {"normalization_version": ""},
+        {"quality_rules_version": ""},
+        {"preview_fingerprint_version": ""},
+        {"field_mapping_json": "[]"},
+        {"field_mapping_json": '{"high": "high", "close": "close"}'},
+        {"preview_completed_at": datetime.now()},
+    ],
+)
+def test_preview_record_rejects_invalid_replay_metadata(updates: dict[str, object]) -> None:
+    with pytest.raises(ValueError):
+        replace(_valid_preview_record(), **updates)
 
 
 def test_market_data_migration_creates_metadata_tables_only(
@@ -278,6 +323,105 @@ def test_complete_preview_rolls_back_metadata_and_issues_together(
     assert unchanged.preview_fingerprint is None
     assert unchanged.preview_completed_at is None
     assert repository.list_issues("batch-rollback") == ()
+    engine.dispose()
+
+
+@pytest.mark.parametrize(
+    "blocked_status",
+    ("PARSING", "VALIDATING", "CANCELLED", "PUBLISHING", "PUBLISHED", "PUBLISH_FAILED"),
+)
+def test_complete_preview_atomically_rejects_non_previewable_states(
+    tmp_path: Path,
+    monkeypatch,
+    blocked_status: str,
+) -> None:
+    monkeypatch.setenv("QUANT_LAB_PROJECT_ROOT", str(tmp_path))
+    settings = Settings(project_root=tmp_path)
+    command.upgrade(Config("backend/alembic.ini"), "head")
+    engine = create_sqlite_engine(settings)
+    now = datetime.now(UTC)
+    with Session(engine) as session:
+        source = DataSourceModel(
+            source_id="source-state",
+            identifier="local_csv",
+            name="state.csv",
+            source_type="LOCAL_CSV",
+            is_local=True,
+            version="1",
+            original_file="state.csv",
+            created_at=now,
+        )
+        batch = ImportBatchModel(
+            batch_id="batch-state",
+            data_source_id=source.source_id,
+            provider_name="local_csv",
+            source_name="state.csv",
+            source_file="state.csv",
+            source_file_hash="9" * 64,
+            requested_at=now,
+            status=ImportBatchStatus.PENDING.value,
+            row_count=0,
+            accepted_count=0,
+            rejected_count=0,
+            warning_count=0,
+            schema_version="1",
+        )
+        session.add_all([source, batch])
+        session.commit()
+
+    original_issue = QualityIssue(
+        row_number=2,
+        symbol="600000",
+        field_name="high",
+        severity=IssueSeverity.WARNING,
+        issue_code="ORIGINAL_WARNING",
+        message="original",
+        raw_value="10",
+        normalized_value="10.00000000",
+    )
+    repository = MarketDataRepository(engine)
+    original_preview = _valid_preview_record(issues=(original_issue,))
+    repository.complete_preview("batch-state", original_preview)
+    with engine.begin() as connection:
+        connection.execute(
+            text("UPDATE import_batches SET status = :status WHERE batch_id = 'batch-state'"),
+            {"status": blocked_status},
+        )
+    before = repository.get_batch("batch-state")
+    before_issue_hashes = tuple(
+        issue.issue_fingerprint for issue in repository.list_issues("batch-state")
+    )
+    replacement_issue = replace(
+        original_issue,
+        issue_code="REPLACEMENT_ERROR",
+        severity=IssueSeverity.ERROR,
+    )
+    replacement_preview = replace(
+        original_preview,
+        source_file_size=999,
+        preview_fingerprint="1" * 64,
+        preview_completed_at=datetime.now(UTC),
+        issues=(replacement_issue,),
+    )
+
+    with pytest.raises(ImportDataError) as captured:
+        repository.complete_preview("batch-state", replacement_preview)
+
+    assert captured.value.category == "PREVIEW_STATE_INVALID"
+    after = repository.get_batch("batch-state")
+    assert after.status == blocked_status
+    assert after.source_file_size == before.source_file_size
+    assert after.field_mapping_json == before.field_mapping_json
+    assert after.provider_version == before.provider_version
+    assert after.schema_version == before.schema_version
+    assert after.normalization_version == before.normalization_version
+    assert after.quality_rules_version == before.quality_rules_version
+    assert after.preview_fingerprint_version == before.preview_fingerprint_version
+    assert after.preview_fingerprint == before.preview_fingerprint
+    assert after.preview_completed_at == before.preview_completed_at
+    assert tuple(
+        issue.issue_fingerprint for issue in repository.list_issues("batch-state")
+    ) == before_issue_hashes
     engine.dispose()
 
 
