@@ -5,6 +5,8 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from sqlalchemy.exc import OperationalError
+
 from quant_lab.datasets.domain import DatasetVersionStatus
 from quant_lab.datasets.repository import DatasetRepository
 
@@ -21,7 +23,12 @@ class PublicationRecoveryService:
 
     def recover(self) -> dict[str, int]:
         recovered = failed = 0
-        for version in self.repository.list_all_versions():
+        try:
+            versions = self.repository.list_all_versions()
+        except OperationalError:
+            # Health-only app fixtures may intentionally start before migrations.
+            return {"recovered": 0, "failed": 0}
+        for version in versions:
             if version.status == DatasetVersionStatus.PUBLISHED.value:
                 continue
             staging = self.staging_root / version.dataset_version_id
