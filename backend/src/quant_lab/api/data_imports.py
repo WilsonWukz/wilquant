@@ -83,16 +83,40 @@ def _batch_response(batch: object) -> ImportBatchResponse:
     from quant_lab.market_data.persistence import ImportBatchModel
 
     assert isinstance(batch, ImportBatchModel)
+    replay_metadata = (
+        batch.source_file_size,
+        batch.field_mapping_json,
+        batch.provider_version,
+        batch.normalization_version,
+        batch.quality_rules_version,
+        batch.preview_fingerprint_version,
+        batch.preview_fingerprint,
+        batch.preview_completed_at,
+    )
+    publish_eligibility = (
+        "ELIGIBLE"
+        if batch.status == "PREVIEW_READY" and all(item is not None for item in replay_metadata)
+        else "PREVIEW_REQUIRED"
+    )
     return ImportBatchResponse(
         batch_id=batch.batch_id,
         provider_name=batch.provider_name,
         source_name=batch.source_name,
         source_file_hash=batch.source_file_hash,
+        source_file_size=batch.source_file_size,
         status=batch.status,
         row_count=batch.row_count,
         accepted_count=batch.accepted_count,
         rejected_count=batch.rejected_count,
         warning_count=batch.warning_count,
+        provider_version=batch.provider_version,
+        schema_version=batch.schema_version,
+        normalization_version=batch.normalization_version,
+        quality_rules_version=batch.quality_rules_version,
+        preview_fingerprint_version=batch.preview_fingerprint_version,
+        preview_fingerprint=batch.preview_fingerprint,
+        preview_completed_at=batch.preview_completed_at,
+        publish_eligibility=publish_eligibility,
         error_category=batch.error_category,
         error_summary=batch.error_summary,
     )
@@ -180,6 +204,9 @@ def get_import_issues(request: Request, batch_id: str):
                     issue_code=item.issue_code,
                     message=item.message,
                     raw_value=item.raw_value,
+                    normalized_value=item.normalized_value,
+                    issue_fingerprint=item.issue_fingerprint,
+                    issue_fingerprint_version=item.issue_fingerprint_version,
                 )
                 for item in repository.list_issues(batch_id)
             )

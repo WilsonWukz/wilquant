@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import hashlib
-import json
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -9,8 +7,9 @@ from sqlalchemy import Engine, delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from quant_lab.market_data.domain import ImportBatchStatus, QualityIssue
+from quant_lab.market_data.domain import ImportBatchStatus, PreviewRecord
 from quant_lab.market_data.errors import ImportDataError
+from quant_lab.market_data.fingerprints import canonical_json_bytes, fingerprint_issue
 from quant_lab.market_data.persistence import (
     DataQualityIssueModel,
     DataSourceModel,
@@ -18,6 +17,7 @@ from quant_lab.market_data.persistence import (
 )
 from quant_lab.market_data.providers import SourceInspection
 from quant_lab.market_data.staging import StagedUpload
+from quant_lab.market_data.versions import ISSUE_FINGERPRINT_VERSION
 
 
 class MarketDataRepository:
@@ -77,35 +77,45 @@ class MarketDataRepository:
             batch = session.get(ImportBatchModel, batch_id)
             if batch is None:
                 raise ImportDataError("BATCH_NOT_FOUND", "导入批次不存在")
+            self._restore_preview_utc(batch)
             session.expunge(batch)
             return batch
 
     def complete_preview(
         self,
         batch_id: str,
-        *,
-        row_count: int,
-        accepted_count: int,
-        rejected_count: int,
-        warning_count: int,
-        issues: tuple[QualityIssue, ...],
+        preview: PreviewRecord,
     ) -> ImportBatchModel:
-        now = datetime.now(UTC)
+        if (
+            preview.preview_completed_at.tzinfo is None
+            or preview.preview_completed_at.utcoffset() is None
+        ):
+            raise ValueError("preview_completed_at must be timezone-aware")
+        preview_completed_at = preview.preview_completed_at.astimezone(UTC)
         canonical_issues = {
-            self._issue_fingerprint(issue): issue
-            for issue in issues
+            fingerprint_issue(issue): issue
+            for issue in preview.issues
         }
         with Session(self._engine) as session:
             batch = session.get(ImportBatchModel, batch_id)
             if batch is None:
                 raise ImportDataError("BATCH_NOT_FOUND", "导入批次不存在")
             batch.status = ImportBatchStatus.PREVIEW_READY.value
-            batch.started_at = batch.started_at or now
-            batch.completed_at = now
-            batch.row_count = row_count
-            batch.accepted_count = accepted_count
-            batch.rejected_count = rejected_count
-            batch.warning_count = warning_count
+            batch.started_at = batch.started_at or preview_completed_at
+            batch.completed_at = preview_completed_at
+            batch.row_count = preview.row_count
+            batch.accepted_count = preview.accepted_count
+            batch.rejected_count = preview.rejected_count
+            batch.warning_count = preview.warning_count
+            batch.source_file_size = preview.source_file_size
+            batch.field_mapping_json = preview.field_mapping_json
+            batch.provider_version = preview.provider_version
+            batch.schema_version = preview.schema_version
+            batch.normalization_version = preview.normalization_version
+            batch.quality_rules_version = preview.quality_rules_version
+            batch.preview_fingerprint_version = preview.preview_fingerprint_version
+            batch.preview_fingerprint = preview.preview_fingerprint
+            batch.preview_completed_at = preview_completed_at
             session.execute(
                 delete(DataQualityIssueModel).where(
                     DataQualityIssueModel.batch_id == batch_id
@@ -123,12 +133,19 @@ class MarketDataRepository:
                     message=issue.message,
                     raw_value=issue.raw_value,
                     issue_fingerprint=fingerprint,
-                    created_at=now,
+                    issue_fingerprint_version=ISSUE_FINGERPRINT_VERSION,
+                    normalized_value=(
+                        None
+                        if issue.normalized_value is None
+                        else canonical_json_bytes(issue.normalized_value).decode("utf-8")
+                    ),
+                    created_at=preview_completed_at,
                 )
                 for fingerprint, issue in sorted(canonical_issues.items())
             )
             session.commit()
             session.refresh(batch)
+            self._restore_preview_utc(batch)
             session.expunge(batch)
             return batch
 
@@ -152,18 +169,8 @@ class MarketDataRepository:
             return items
 
     @staticmethod
-    def _issue_fingerprint(issue: QualityIssue) -> str:
-        payload = json.dumps(
-            [
-                issue.row_number,
-                issue.symbol,
-                issue.field_name,
-                issue.severity.value,
-                issue.issue_code,
-                issue.message,
-                issue.raw_value,
-            ],
-            ensure_ascii=False,
-            separators=(",", ":"),
-        )
-        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+    def _restore_preview_utc(batch: ImportBatchModel) -> None:
+        """SQLite returns naive datetimes; persisted Preview times are defined as UTC."""
+        completed_at = batch.preview_completed_at
+        if completed_at is not None and completed_at.tzinfo is None:
+            batch.preview_completed_at = completed_at.replace(tzinfo=UTC)

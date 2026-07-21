@@ -116,6 +116,26 @@ class QualityIssue:
 
 
 @dataclass(frozen=True, slots=True)
+class PreviewRecord:
+    """Complete deterministic Preview control-plane record persisted atomically."""
+
+    source_file_size: int
+    field_mapping_json: str
+    provider_version: str
+    schema_version: str
+    normalization_version: str
+    quality_rules_version: str
+    preview_fingerprint_version: str
+    row_count: int
+    accepted_count: int
+    rejected_count: int
+    warning_count: int
+    preview_fingerprint: str
+    preview_completed_at: datetime
+    issues: tuple[QualityIssue, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class ValidatedBar:
     row_number: int
     bar: Bar

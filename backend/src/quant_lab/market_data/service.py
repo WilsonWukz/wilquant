@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
 
 from quant_lab.market_data.domain import (
     Bar,
+    PreviewRecord,
     QualityStatus,
 )
 from quant_lab.market_data.errors import ImportDataError
+from quant_lab.market_data.fingerprints import canonical_json_bytes
 from quant_lab.market_data.processing import REQUIRED_FIELDS, process_market_data
 from quant_lab.market_data.providers import (
     DataSourceInput,
@@ -18,6 +21,12 @@ from quant_lab.market_data.providers import (
 )
 from quant_lab.market_data.repository import MarketDataRepository
 from quant_lab.market_data.staging import StagedUpload
+from quant_lab.market_data.versions import (
+    NORMALIZATION_RULES_VERSION,
+    PREVIEW_FINGERPRINT_VERSION,
+    QUALITY_RULES_VERSION,
+    SCHEMA_VERSION,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -65,21 +74,33 @@ class MarketDataImportService:
         if source_path.parent != self._import_directory:
             raise ImportDataError("INVALID_SOURCE", "导入来源无效")
         provider = self._provider_for(source_path)
+        source_file_size = source_path.stat().st_size
         processed = process_market_data(
             provider=provider,
             source=DataSourceInput(source_path, batch.source_name, batch.source_file_hash),
-            source_size=source_path.stat().st_size,
+            source_size=source_file_size,
             field_mapping=field_mapping,
             data_source=batch.provider_name,
             source_batch_id=batch_id,
         )
         updated = self._repository.complete_preview(
             batch_id,
-            row_count=processed.row_count,
-            accepted_count=processed.accepted_count,
-            rejected_count=processed.rejected_count,
-            warning_count=processed.warning_count,
-            issues=processed.issues,
+            PreviewRecord(
+                source_file_size=source_file_size,
+                field_mapping_json=canonical_json_bytes(field_mapping).decode("utf-8"),
+                provider_version=provider.version,
+                schema_version=SCHEMA_VERSION,
+                normalization_version=NORMALIZATION_RULES_VERSION,
+                quality_rules_version=QUALITY_RULES_VERSION,
+                preview_fingerprint_version=PREVIEW_FINGERPRINT_VERSION,
+                row_count=processed.row_count,
+                accepted_count=processed.accepted_count,
+                rejected_count=processed.rejected_count,
+                warning_count=processed.warning_count,
+                preview_fingerprint=processed.preview_fingerprint,
+                preview_completed_at=datetime.now(UTC),
+                issues=processed.issues,
+            ),
         )
         samples = tuple(
             self._serialize_bar(row.bar)

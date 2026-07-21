@@ -5,12 +5,20 @@ from pathlib import Path
 import pytest
 from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
 from alembic import command
 from quant_lab.core.config import Settings
+from quant_lab.db.sqlite import create_sqlite_engine
 from quant_lab.main import create_app
 from quant_lab.market_data.service import MarketDataImportService
+from quant_lab.market_data.versions import (
+    NORMALIZATION_RULES_VERSION,
+    PREVIEW_FINGERPRINT_VERSION,
+    QUALITY_RULES_VERSION,
+    SCHEMA_VERSION,
+)
 
 pytestmark = pytest.mark.anyio
 
@@ -86,13 +94,26 @@ async def test_inspect_preview_and_read_batch(
     assert result["rejected_count"] == 1
     assert result["warning_count"] == 0
     assert len(result["sample_rows"]) == 1
+    assert len(result["preview_fingerprint"]) == 64
+    assert result["provider_version"] == "local-csv@1"
+    assert result["schema_version"] == SCHEMA_VERSION
+    assert result["normalization_version"] == NORMALIZATION_RULES_VERSION
+    assert result["quality_rules_version"] == QUALITY_RULES_VERSION
+    assert result["preview_fingerprint_version"] == PREVIEW_FINGERPRINT_VERSION
+    assert result["preview_completed_at"].endswith("Z")
+    assert result["publish_eligibility"] == "ELIGIBLE"
 
     batch = await import_client.get(f"/api/v1/data/imports/{inspected['batch_id']}")
     issues = await import_client.get(
         f"/api/v1/data/imports/{inspected['batch_id']}/issues"
     )
     assert batch.json()["status"] == "PREVIEW_READY"
+    assert batch.json()["preview_fingerprint"] == result["preview_fingerprint"]
+    assert batch.json()["publish_eligibility"] == "ELIGIBLE"
     assert any(item["issue_code"] == "HIGH_BELOW_LOW" for item in issues.json()["items"])
+    issue = next(item for item in issues.json()["items"] if item["issue_code"] == "HIGH_BELOW_LOW")
+    assert issue["issue_fingerprint_version"] == "quality-issue-sha256@2"
+    assert issue["normalized_value"] is not None
     assert any(
         getattr(record, "event", None) == "data_import.preview_ready"
         and getattr(record, "batch_id", None) == inspected["batch_id"]
@@ -126,9 +147,56 @@ async def test_repeated_preview_is_idempotent(import_client: AsyncClient) -> Non
     second_issues = await import_client.get(f"/api/v1/data/imports/{batch_id}/issues")
 
     assert first_preview.status_code == second_preview.status_code == 200
-    assert first_preview.json() == second_preview.json()
+    stable_fields = (
+        "row_count",
+        "accepted_count",
+        "rejected_count",
+        "warning_count",
+        "preview_fingerprint",
+        "provider_version",
+        "schema_version",
+        "normalization_version",
+        "quality_rules_version",
+        "preview_fingerprint_version",
+    )
+    assert {field: first_preview.json()[field] for field in stable_fields} == {
+        field: second_preview.json()[field] for field in stable_fields
+    }
     assert first_issues.json() == second_issues.json()
     assert len(second_issues.json()["items"]) == len(first_issues.json()["items"])
+
+
+async def test_legacy_preview_ready_batch_requires_a_new_preview(
+    import_client: AsyncClient,
+    tmp_path: Path,
+) -> None:
+    inspection = await inspect_csv(import_client)
+    batch_id = inspection.json()["batch_id"]
+    settings = Settings(project_root=tmp_path, runtime_root=tmp_path / "runtime")
+    engine = create_sqlite_engine(settings)
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE import_batches SET status = 'PREVIEW_READY', "
+                "source_file_size = NULL, field_mapping_json = NULL, "
+                "provider_version = NULL, normalization_version = NULL, "
+                "quality_rules_version = NULL, preview_fingerprint_version = NULL, "
+                "preview_fingerprint = NULL, preview_completed_at = NULL "
+                "WHERE batch_id = :batch_id"
+            ),
+            {"batch_id": batch_id},
+        )
+    engine.dispose()
+
+    response = await import_client.get(f"/api/v1/data/imports/{batch_id}")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "PREVIEW_READY"
+    assert payload["publish_eligibility"] == "PREVIEW_REQUIRED"
+    assert payload["preview_fingerprint"] is None
+    assert "runtime" not in response.text
+    assert str(tmp_path) not in response.text
 
 
 async def test_all_parse_failures_are_not_reported_as_an_empty_file(
