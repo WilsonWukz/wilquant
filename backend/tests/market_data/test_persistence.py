@@ -57,7 +57,7 @@ def _valid_preview_record(*, issues: tuple[QualityIssue, ...] = ()) -> PreviewRe
     return PreviewRecord(
         source_file_size=123,
         field_mapping_json=_canonical_mapping(REQUIRED_MAPPING),
-        provider_version="local-csv@1",
+        provider_version="local_csv@1",
         schema_version=SCHEMA_VERSION,
         normalization_version=NORMALIZATION_RULES_VERSION,
         quality_rules_version=QUALITY_RULES_VERSION,
@@ -281,7 +281,7 @@ def test_repeated_preview_replaces_quality_issues_transactionally(
     preview = PreviewRecord(
         source_file_size=123,
         field_mapping_json=_canonical_mapping(REQUIRED_MAPPING),
-        provider_version="local-csv@1",
+        provider_version="local_csv@1",
         schema_version=SCHEMA_VERSION,
         normalization_version=NORMALIZATION_RULES_VERSION,
         quality_rules_version=QUALITY_RULES_VERSION,
@@ -302,7 +302,7 @@ def test_repeated_preview_replaces_quality_issues_transactionally(
     assert updated.warning_count == 0
     assert updated.source_file_size == 123
     assert updated.field_mapping_json == _canonical_mapping(REQUIRED_MAPPING)
-    assert updated.provider_version == "local-csv@1"
+    assert updated.provider_version == "local_csv@1"
     assert updated.schema_version == SCHEMA_VERSION
     assert updated.normalization_version == NORMALIZATION_RULES_VERSION
     assert updated.quality_rules_version == QUALITY_RULES_VERSION
@@ -370,7 +370,7 @@ def test_complete_preview_rolls_back_metadata_and_issues_together(
     preview = PreviewRecord(
         source_file_size=456,
         field_mapping_json=_canonical_mapping(REQUIRED_MAPPING),
-        provider_version="local-csv@1",
+        provider_version="local_csv@1",
         schema_version=SCHEMA_VERSION,
         normalization_version=NORMALIZATION_RULES_VERSION,
         quality_rules_version=QUALITY_RULES_VERSION,

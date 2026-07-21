@@ -19,6 +19,10 @@ from quant_lab.market_data.providers import (
     RawRow,
     SyntheticDataProvider,
 )
+from quant_lab.market_data.versions import (
+    LOCAL_CSV_PROVIDER_VERSION,
+    LOCAL_PARQUET_PROVIDER_VERSION,
+)
 
 MAPPING = {
     field: field
@@ -122,8 +126,10 @@ def test_processing_uses_the_concrete_provider_version() -> None:
         version = "synthetic@2"
 
     assert baseline_provider.version == "synthetic@1"
-    assert LocalCsvMarketDataProvider.version == "local-csv@1"
-    assert LocalParquetMarketDataProvider.version == "local-parquet@1"
+    assert LOCAL_CSV_PROVIDER_VERSION == "local_csv@1"
+    assert LOCAL_PARQUET_PROVIDER_VERSION == "local_parquet@1"
+    assert LocalCsvMarketDataProvider.version == "local_csv@1"
+    assert LocalParquetMarketDataProvider.version == "local_parquet@1"
     assert process(provider=baseline_provider).preview_fingerprint != process(
         provider=NextSyntheticProvider()
     ).preview_fingerprint

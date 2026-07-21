@@ -108,7 +108,7 @@ async def test_inspect_preview_and_read_batch(
     assert result["warning_count"] == 0
     assert len(result["sample_rows"]) == 1
     assert len(result["preview_fingerprint"]) == 64
-    assert result["provider_version"] == "local-csv@1"
+    assert result["provider_version"] == "local_csv@1"
     assert result["schema_version"] == SCHEMA_VERSION
     assert result["normalization_version"] == NORMALIZATION_RULES_VERSION
     assert result["quality_rules_version"] == QUALITY_RULES_VERSION
@@ -122,6 +122,7 @@ async def test_inspect_preview_and_read_batch(
     )
     assert batch.json()["status"] == "PREVIEW_READY"
     assert batch.json()["preview_fingerprint"] == result["preview_fingerprint"]
+    assert batch.json()["provider_version"] == "local_csv@1"
     assert batch.json()["publish_eligibility"] == "QUALITY_BLOCKED"
     assert any(item["issue_code"] == "HIGH_BELOW_LOW" for item in issues.json()["items"])
     issue = next(item for item in issues.json()["items"] if item["issue_code"] == "HIGH_BELOW_LOW")

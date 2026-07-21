@@ -1,7 +1,7 @@
 """Fixed versions for deterministic market-data processing."""
 
-LOCAL_CSV_PROVIDER_VERSION = "local-csv@1"
-LOCAL_PARQUET_PROVIDER_VERSION = "local-parquet@1"
+LOCAL_CSV_PROVIDER_VERSION = "local_csv@1"
+LOCAL_PARQUET_PROVIDER_VERSION = "local_parquet@1"
 SYNTHETIC_PROVIDER_VERSION = "synthetic@1"
 SCHEMA_VERSION = "market-bar@1"
 NORMALIZATION_RULES_VERSION = "a-share-daily-normalization@1"
