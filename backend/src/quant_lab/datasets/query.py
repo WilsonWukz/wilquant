@@ -20,6 +20,8 @@ class DatasetQueryService:
         version = self.repository.get_version(dataset_id, version_id)
         if version.status != DatasetVersionStatus.PUBLISHED.value:
             raise DatasetError("DATASET_VERSION_NOT_PUBLISHED", "仅可查询已发布版本")
+        if not version.relative_version_root:
+            raise DatasetError("PUBLISHED_DATASET_INCONSISTENT", "已发布版本路径缺失")
         files = self.repository.list_files(version_id)
         if not files:
             raise DatasetError("PUBLISHED_DATASET_INCONSISTENT", "已发布版本文件缺失")
