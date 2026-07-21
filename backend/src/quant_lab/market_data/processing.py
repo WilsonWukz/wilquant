@@ -151,11 +151,7 @@ def process_market_data(
                 if issue.row_number is not None and issue.field_name is not None
                 else None
             ),
-            normalized_value=(
-                getattr(bar_by_row[issue.row_number], issue.field_name, None)
-                if issue.row_number is not None and issue.field_name is not None
-                else None
-            ),
+            normalized_value=issue.normalized_value,
             instrument_id=(
                 bar_by_row[issue.row_number].instrument_id
                 if issue.row_number is not None

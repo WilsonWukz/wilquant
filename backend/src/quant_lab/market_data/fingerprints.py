@@ -40,7 +40,7 @@ def _decimal_text(value: Decimal) -> str:
     return "0" if text in {"", "-0"} else text
 
 
-def _canonicalize(value: object, *, excluded_keys: frozenset[str] = frozenset()) -> object:
+def _canonicalize(value: object) -> object:
     if value is None or isinstance(value, bool | int):
         return value
     if isinstance(value, str):
@@ -59,18 +59,19 @@ def _canonicalize(value: object, *, excluded_keys: frozenset[str] = frozenset())
     if isinstance(value, date):
         return value.isoformat()
     if isinstance(value, Enum):
-        return _canonicalize(value.value, excluded_keys=excluded_keys)
+        return _canonicalize(value.value)
     if isinstance(value, dict):
         canonical: dict[str, object] = {}
         for key, item in value.items():
             if not isinstance(key, str):
                 raise TypeError("Unsupported canonical mapping key")
             normalized_key = unicodedata.normalize("NFC", key)
-            if normalized_key not in excluded_keys:
-                canonical[normalized_key] = _canonicalize(item, excluded_keys=excluded_keys)
+            if normalized_key in canonical:
+                raise ValueError("Canonical mapping key collision after NFC normalization")
+            canonical[normalized_key] = _canonicalize(item)
         return canonical
     if isinstance(value, (list, tuple)):
-        return [_canonicalize(item, excluded_keys=excluded_keys) for item in value]
+        return [_canonicalize(item) for item in value]
     raise TypeError(f"Unsupported canonical type: {type(value).__name__}")
 
 
@@ -85,8 +86,8 @@ def canonical_json_bytes(value: object) -> bytes:
     ).encode("utf-8")
 
 
-def _sha256(value: object, *, excluded_keys: frozenset[str] = frozenset()) -> str:
-    canonical = _canonicalize(value, excluded_keys=excluded_keys)
+def _sha256(value: object) -> str:
+    canonical = _canonicalize(value)
     return hashlib.sha256(canonical_json_bytes(canonical)).hexdigest()
 
 
@@ -106,4 +107,5 @@ def fingerprint_issue(issue: QualityIssue) -> str:
 
 
 def fingerprint_preview(payload: dict[str, object]) -> str:
-    return _sha256(payload, excluded_keys=_PREVIEW_EXCLUDED_KEYS)
+    envelope = {key: value for key, value in payload.items() if key not in _PREVIEW_EXCLUDED_KEYS}
+    return _sha256(envelope)

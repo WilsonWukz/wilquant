@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
+
+import pytest
 
 from quant_lab.market_data import normalization
 from quant_lab.market_data import processing as processing_module
 from quant_lab.market_data.domain import ValidationResult
+from quant_lab.market_data.fingerprints import fingerprint_issue
 from quant_lab.market_data.processing import process_market_data
 from quant_lab.market_data.providers import (
     DataSourceInput,
@@ -171,6 +175,39 @@ def test_parse_rejection_fingerprint_covers_canonical_raw_row() -> None:
 
     assert left.issues[0].raw_value != right.issues[0].raw_value
     assert left.preview_fingerprint != right.preview_fingerprint
+
+
+@pytest.mark.parametrize("field_name", ["open", "high", "low", "close"])
+def test_non_positive_ohlc_issue_fingerprint_covers_the_specific_value(
+    field_name: str,
+) -> None:
+    class NonPositiveProvider(SyntheticDataProvider):
+        def __init__(self, value: str) -> None:
+            super().__init__()
+            self.value = value
+
+        def load_bars(self, source: DataSourceInput) -> RawBarBatch:
+            row = super().load_bars(source).rows[0]
+            return RawBarBatch(
+                (RawRow(row.row_number, {**row.values, field_name: self.value}),)
+            )
+
+    left = process(provider=NonPositiveProvider("-1"))
+    right = process(provider=NonPositiveProvider("-2"))
+    left_issue = next(
+        item
+        for item in left.issues
+        if item.issue_code == "NON_POSITIVE_PRICE" and item.field_name == field_name
+    )
+    right_issue = next(
+        item
+        for item in right.issues
+        if item.issue_code == "NON_POSITIVE_PRICE" and item.field_name == field_name
+    )
+
+    assert left_issue.raw_value == "-1"
+    assert left_issue.normalized_value == Decimal("-1")
+    assert fingerprint_issue(left_issue) != fingerprint_issue(right_issue)
 
 
 def test_processing_does_not_persist_preview_bars() -> None:

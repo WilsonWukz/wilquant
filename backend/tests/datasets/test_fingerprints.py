@@ -125,6 +125,19 @@ def test_canonical_strings_normalize_all_line_endings_to_lf() -> None:
     )
 
 
+def test_canonical_mapping_rejects_nfc_key_collisions_independent_of_order() -> None:
+    messages: list[str] = []
+    for payload in (
+        {"é": "nfc", "e\u0301": "nfd"},
+        {"e\u0301": "nfd", "é": "nfc"},
+    ):
+        with pytest.raises(ValueError, match="Canonical mapping key collision") as error:
+            canonical_json_bytes(payload)
+        messages.append(str(error.value))
+
+    assert messages[0] == messages[1]
+
+
 @pytest.mark.parametrize("value", [Decimal("NaN"), Decimal("Infinity"), float("nan")])
 def test_canonical_json_rejects_non_finite_numbers(value: object) -> None:
     with pytest.raises(ValueError, match="finite"):
@@ -189,10 +202,20 @@ def test_preview_fingerprint_excludes_request_batch_and_ingestion_metadata() -> 
 def test_preview_fingerprint_excludes_formal_runtime_metadata(metadata_key: str) -> None:
     left = preview_payload()
     right = preview_payload()
-    left["runtime"] = {metadata_key: "left"}
-    right["runtime"] = {metadata_key: "right"}
+    left[metadata_key] = "left"
+    right[metadata_key] = "right"
 
     assert fingerprint_preview(left) == fingerprint_preview(right)
+
+
+@pytest.mark.parametrize("business_key", ["request_id", "database_id"])
+def test_preview_fingerprint_keeps_nested_business_keys(business_key: str) -> None:
+    left = preview_payload()
+    right = preview_payload()
+    left["business_object"] = {business_key: "left"}
+    right["business_object"] = {business_key: "right"}
+
+    assert fingerprint_preview(left) != fingerprint_preview(right)
 
 
 def test_preview_fingerprint_preserves_source_row_order() -> None:

@@ -15,7 +15,25 @@ from quant_lab.market_data.domain import (
 
 
 def _issue(row_number: int, bar: Bar, field: str, code: str, message: str) -> QualityIssue:
-    return QualityIssue(row_number, bar.symbol, field, IssueSeverity.ERROR, code, message)
+    normalized_values: dict[str, object] = {
+        "open": bar.open,
+        "high": bar.high,
+        "low": bar.low,
+        "close": bar.close,
+        "volume": bar.volume,
+        "amount": bar.amount,
+        "trade_date": bar.trade_date,
+    }
+    return QualityIssue(
+        row_number,
+        bar.symbol,
+        field,
+        IssueSeverity.ERROR,
+        code,
+        message,
+        normalized_value=normalized_values.get(field),
+        instrument_id=bar.instrument_id,
+    )
 
 
 def validate_bars(indexed_bars: list[tuple[int, Bar]]) -> ValidationResult:
@@ -41,10 +59,22 @@ def validate_bars(indexed_bars: list[tuple[int, Bar]]) -> ValidationResult:
 
     for row_number, original_bar in indexed_bars:
         bar_issues: list[QualityIssue] = []
-        if min(original_bar.open, original_bar.high, original_bar.low, original_bar.close) <= 0:
-            bar_issues.append(
-                _issue(row_number, original_bar, "price", "NON_POSITIVE_PRICE", "价格必须大于零")
-            )
+        for field_name, value in (
+            ("open", original_bar.open),
+            ("high", original_bar.high),
+            ("low", original_bar.low),
+            ("close", original_bar.close),
+        ):
+            if value <= 0:
+                bar_issues.append(
+                    _issue(
+                        row_number,
+                        original_bar,
+                        field_name,
+                        "NON_POSITIVE_PRICE",
+                        "价格必须大于零",
+                    )
+                )
         if original_bar.volume < 0:
             bar_issues.append(
                 _issue(row_number, original_bar, "volume", "NEGATIVE_VOLUME", "成交量不得小于零")
