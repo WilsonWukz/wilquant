@@ -10,9 +10,11 @@ from sqlalchemy import Engine
 
 from quant_lab import __version__
 from quant_lab.api.data_imports import router as data_imports_router
+from quant_lab.api.datasets import router as datasets_router
 from quant_lab.api.health import router as health_router
 from quant_lab.core.config import Settings
 from quant_lab.core.logging import configure_logging
+from quant_lab.datasets.repository import DatasetRepository
 from quant_lab.db.duckdb import DuckDbStore
 from quant_lab.db.sqlite import create_sqlite_engine
 from quant_lab.health.service import HealthService
@@ -39,6 +41,7 @@ def create_app(
         owned_engine = create_sqlite_engine(resolved_settings)
         repository = MarketDataRepository(owned_engine)
         app.state.market_data_repository = repository
+        app.state.dataset_repository = DatasetRepository(owned_engine)
         app.state.import_service = MarketDataImportService(
             repository,
             resolved_settings.import_directory,
@@ -75,6 +78,7 @@ def create_app(
     )
     application.include_router(health_router, prefix="/api/v1")
     application.include_router(data_imports_router, prefix="/api/v1")
+    application.include_router(datasets_router, prefix="/api/v1")
     return application
 
 
