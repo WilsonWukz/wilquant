@@ -13,6 +13,7 @@ if (-not (Test-Path -LiteralPath $pythonPath)) {
 Push-Location $script:ProjectRoot
 try {
     $env:RUFF_CACHE_DIR = Join-Path ([System.IO.Path]::GetTempPath()) 'quant-lab-ruff-cache'
+    $env:MYPY_CACHE_DIR = Join-Path ([System.IO.Path]::GetTempPath()) 'quant-lab-mypy-cache'
     Invoke-ProjectCommand -FilePath $powershellCommand.Source -ArgumentList @(
         '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
         (Join-Path $script:ProjectRoot 'scripts\test_common.ps1')
