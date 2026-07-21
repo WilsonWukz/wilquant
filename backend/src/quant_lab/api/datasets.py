@@ -27,11 +27,11 @@ def _repository(request: Request) -> DatasetRepository:
 
 
 def _error(error: DatasetError, request_id: str) -> JSONResponse:
-    status_code = (
-        status.HTTP_404_NOT_FOUND
-        if error.category in {"DATASET_NOT_FOUND", "DATASET_VERSION_NOT_FOUND"}
-        else status.HTTP_400_BAD_REQUEST
-    )
+    status_code = {
+        "DATASET_NOT_FOUND": status.HTTP_404_NOT_FOUND,
+        "DATASET_VERSION_NOT_FOUND": status.HTTP_404_NOT_FOUND,
+        "DATASET_IDENTITY_CONFLICT": status.HTTP_409_CONFLICT,
+    }.get(error.category, status.HTTP_400_BAD_REQUEST)
     return JSONResponse(
         status_code=status_code,
         content={

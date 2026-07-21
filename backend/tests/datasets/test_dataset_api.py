@@ -1,17 +1,24 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import Engine
 from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.orm import Session
 
+import quant_lab.datasets.repository as repository_module
 from alembic import command
 from quant_lab.core.config import Settings
+from quant_lab.datasets.persistence import DatasetVersionModel
 from quant_lab.datasets.repository import DatasetRepository
+from quant_lab.db.sqlite import create_sqlite_engine
 from quant_lab.main import create_app
+from quant_lab.market_data.persistence import DataSourceModel, ImportBatchModel
 
 pytestmark = pytest.mark.anyio
 
@@ -26,6 +33,73 @@ CREATE_DATASET = {
     "adjustment_type": "NONE",
     "schema_version": "market-bar@1",
 }
+
+
+def insert_dataset_version(engine: Engine, dataset_id: str) -> str:
+    now = datetime(2026, 7, 21, 8, 30, tzinfo=UTC)
+    version_id = "version-for-api"
+    with Session(engine) as session, session.begin():
+        session.add(
+            DataSourceModel(
+                source_id="source-for-api-version",
+                identifier="api-version-source",
+                name="API version source",
+                source_type="LOCAL_FILE",
+                is_local=True,
+                version="1",
+                original_file="controlled-upload.csv",
+                created_at=now,
+            )
+        )
+        session.flush()
+        session.add(
+            ImportBatchModel(
+                batch_id="batch-for-api-version",
+                data_source_id="source-for-api-version",
+                provider_name="local_csv",
+                source_name="controlled-upload.csv",
+                source_file="controlled-upload.csv",
+                source_file_hash="d" * 64,
+                requested_at=now,
+                status="PREVIEW_READY",
+                row_count=1,
+                accepted_count=1,
+                rejected_count=0,
+                warning_count=0,
+                schema_version="market-bar@1",
+            )
+        )
+        session.flush()
+        session.add(
+            DatasetVersionModel(
+                dataset_version_id=version_id,
+                dataset_id=dataset_id,
+                version=1,
+                status="VALIDATING",
+                source_batch_id="batch-for-api-version",
+                source_preview_fingerprint="e" * 64,
+                publication_fingerprint="f" * 64,
+                schema_version="market-bar@1",
+                normalization_version="normalization@1",
+                quality_rules_version="quality@1",
+                publication_format_version="parquet@1",
+                partition_strategy_version="market-bars@1",
+                row_count=0,
+                instrument_count=0,
+                min_timestamp=now,
+                max_timestamp=now,
+                partition_count=0,
+                file_count=0,
+                total_size_bytes=0,
+                quality_issue_count=0,
+                warning_count=0,
+                blocking_issue_count=0,
+                publication_claimed_at=now,
+                published_at=now,
+                created_at=now,
+            )
+        )
+    return version_id
 
 
 @pytest.fixture
@@ -61,6 +135,8 @@ async def test_create_dataset_is_idempotent_by_logical_identity(
     assert second.json() == first.json()
     assert first.json()["dataset_key"]
     assert first.json()["name"] == "A股日线"
+    assert first.json()["created_at"].endswith(("Z", "+00:00"))
+    assert first.json()["updated_at"].endswith(("Z", "+00:00"))
     assert "runtime" not in first.text
 
 
@@ -79,6 +155,8 @@ async def test_list_and_empty_version_routes_are_safe(
 
     assert datasets.status_code == 200
     assert datasets.json()["items"] == [created.json()]
+    assert datasets.json()["items"][0]["created_at"].endswith(("Z", "+00:00"))
+    assert datasets.json()["items"][0]["updated_at"].endswith(("Z", "+00:00"))
     assert versions.status_code == 200
     assert versions.json() == {"items": []}
     assert missing.status_code == 404
@@ -118,6 +196,57 @@ async def test_database_errors_are_redacted(
     assert response.json()["request_id"]
     assert "quant_lab.db" not in response.text
     assert "runtime" not in response.text
+
+
+async def test_version_api_datetimes_are_explicit_utc(
+    dataset_client: AsyncClient,
+    tmp_path: Path,
+) -> None:
+    created = await dataset_client.post("/api/v1/datasets", json=CREATE_DATASET)
+    dataset_id = created.json()["dataset_id"]
+    settings = Settings(project_root=tmp_path, runtime_root=tmp_path / "runtime")
+    engine = create_sqlite_engine(settings)
+    try:
+        version_id = insert_dataset_version(engine, dataset_id)
+    finally:
+        engine.dispose()
+
+    listed = await dataset_client.get(f"/api/v1/datasets/{dataset_id}/versions")
+    fetched = await dataset_client.get(
+        f"/api/v1/datasets/{dataset_id}/versions/{version_id}"
+    )
+
+    assert listed.status_code == fetched.status_code == 200
+    for version in (listed.json()["items"][0], fetched.json()):
+        for field in (
+            "publication_claimed_at",
+            "created_at",
+            "min_timestamp",
+            "max_timestamp",
+            "published_at",
+        ):
+            assert version[field].endswith(("Z", "+00:00"))
+
+
+async def test_dataset_key_identity_conflict_is_stable_and_redacted(
+    dataset_client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created = await dataset_client.post("/api/v1/datasets", json=CREATE_DATASET)
+    dataset_key = created.json()["dataset_key"]
+    monkeypatch.setattr(repository_module, "dataset_key_for", lambda _identity: dataset_key)
+
+    response = await dataset_client.post(
+        "/api/v1/datasets",
+        json={**CREATE_DATASET, "market": "HK_EQUITY", "name": "different identity"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "DATASET_IDENTITY_CONFLICT"
+    assert response.json()["request_id"]
+    assert "HK_EQUITY" not in response.text
+    assert "database" not in response.text.lower()
+    assert "runtime" not in response.text.lower()
 
 
 def test_openapi_contains_exact_dataset_routes() -> None:

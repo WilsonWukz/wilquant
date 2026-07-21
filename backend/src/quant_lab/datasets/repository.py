@@ -77,6 +77,32 @@ def dataset_key_for(identity: DatasetIdentity) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def _utc_aware(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
+def _restore_dataset_datetimes(dataset: DatasetModel) -> DatasetModel:
+    dataset.created_at = cast(datetime, _utc_aware(dataset.created_at))
+    dataset.updated_at = cast(datetime, _utc_aware(dataset.updated_at))
+    return dataset
+
+
+def _restore_version_datetimes(version: DatasetVersionModel) -> DatasetVersionModel:
+    version.min_timestamp = _utc_aware(version.min_timestamp)
+    version.max_timestamp = _utc_aware(version.max_timestamp)
+    version.publication_claimed_at = cast(
+        datetime,
+        _utc_aware(version.publication_claimed_at),
+    )
+    version.published_at = _utc_aware(version.published_at)
+    version.created_at = cast(datetime, _utc_aware(version.created_at))
+    return version
+
+
 class DatasetRepository:
     def __init__(self, engine: Engine) -> None:
         self._engine = engine
@@ -116,14 +142,21 @@ class DatasetRepository:
             dataset = session.scalars(
                 select(DatasetModel).where(DatasetModel.dataset_key == dataset_key)
             ).one()
+            if any(getattr(dataset, field) != canonical[field] for field in _IDENTITY_FIELDS):
+                raise DatasetError(
+                    "DATASET_IDENTITY_CONFLICT",
+                    "数据集身份冲突, 请检查本地数据一致性",
+                )
             created = cast(CursorResult[Any], result).rowcount == 1
+            _restore_dataset_datetimes(dataset)
             session.expunge(dataset)
         return DatasetCreateResult(dataset=dataset, created=created)
 
     def list_datasets(self) -> tuple[DatasetModel, ...]:
         with Session(self._engine) as session:
             datasets = tuple(
-                session.scalars(
+                _restore_dataset_datetimes(dataset)
+                for dataset in session.scalars(
                     select(DatasetModel).order_by(
                         DatasetModel.created_at,
                         DatasetModel.dataset_id,
@@ -137,7 +170,8 @@ class DatasetRepository:
         self._require_dataset(dataset_id)
         with Session(self._engine) as session:
             versions = tuple(
-                session.scalars(
+                _restore_version_datetimes(version)
+                for version in session.scalars(
                     select(DatasetVersionModel)
                     .where(DatasetVersionModel.dataset_id == dataset_id)
                     .order_by(DatasetVersionModel.version)
@@ -157,6 +191,7 @@ class DatasetRepository:
             )
             if version is None:
                 raise DatasetError("DATASET_VERSION_NOT_FOUND", "数据集版本不存在")
+            _restore_version_datetimes(version)
             session.expunge(version)
         return version
 
