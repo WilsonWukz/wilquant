@@ -17,6 +17,7 @@ from quant_lab.api.datasets import router as datasets_router
 from quant_lab.api.health import router as health_router
 from quant_lab.api.market_data import router as market_data_router
 from quant_lab.api.profiles import router as profiles_router
+from quant_lab.api.strategies import router as strategies_router
 from quant_lab.backtest.repository import BacktestRepository
 from quant_lab.backtest.service import BacktestService
 from quant_lab.core.config import Settings
@@ -62,6 +63,7 @@ def create_app(
         )
         app.state.profile_repository = MarketDataProfileRepository(owned_engine)
         app.state.backtest_repository = BacktestRepository(owned_engine)
+        app.state.sqlite_engine = owned_engine
         app.state.dataset_repository = DatasetRepository(
             owned_engine,
             run_mode=resolved_settings.run_mode,
@@ -139,6 +141,7 @@ def create_app(
     application.include_router(profiles_router, prefix="/api/v1")
     application.include_router(market_data_router, prefix="/api/v1")
     application.include_router(backtests_router, prefix="/api/v1")
+    application.include_router(strategies_router, prefix="/api/v1")
     return application
 
 
