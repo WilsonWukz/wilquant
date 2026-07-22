@@ -4,6 +4,7 @@ import csv
 import hashlib
 from datetime import date, time
 from pathlib import Path
+from typing import cast
 
 from quant_lab.datasets.errors import DatasetError
 from quant_lab.market_data.calendar_persistence import (
@@ -103,10 +104,12 @@ class TradingCalendarImportService:
     @staticmethod
     def _canonical_session(item: dict[str, object]) -> dict[str, object]:
         return {
-            "session_date": item["session_date"].isoformat(),
+            "session_date": cast(date, item["session_date"]).isoformat(),
             "is_open": item["is_open"],
-            "open_time": item["open_time"].isoformat() if item["open_time"] else None,
-            "close_time": item["close_time"].isoformat() if item["close_time"] else None,
+            "open_time": cast(time, item["open_time"]).isoformat() if item["open_time"] else None,
+            "close_time": cast(time, item["close_time"]).isoformat()
+            if item["close_time"]
+            else None,
             "timezone": item["timezone"],
             "session_type": item["session_type"],
         }

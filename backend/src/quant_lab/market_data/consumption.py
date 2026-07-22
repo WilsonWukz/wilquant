@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import UTC, date, datetime
+from typing import cast
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -54,7 +55,7 @@ class MarketDataService:
             limit=limit,
             offset=offset,
         )
-        timestamps = [row["timestamp"] for row in rows]
+        timestamps = [cast(datetime, row["timestamp"]) for row in rows]
         query_payload = {
             "profile_id": profile_id,
             "dataset_version_id": profile.bars_dataset_version_id,
@@ -111,12 +112,16 @@ class MarketDataService:
         version = self.dataset_query.repository.get_version(
             profile.bars_dataset_id, profile.bars_dataset_version_id
         )
-        if version.min_timestamp and calendar.first_session_date and (
-            calendar.first_session_date > version.min_timestamp.date()
+        if (
+            version.min_timestamp
+            and calendar.first_session_date
+            and (calendar.first_session_date > version.min_timestamp.date())
         ):
             raise DatasetError("CALENDAR_COVERAGE_INCOMPLETE", "交易日历未覆盖数据起始日期")
-        if version.max_timestamp and calendar.last_session_date and (
-            calendar.last_session_date < version.max_timestamp.date()
+        if (
+            version.max_timestamp
+            and calendar.last_session_date
+            and (calendar.last_session_date < version.max_timestamp.date())
         ):
             raise DatasetError("CALENDAR_COVERAGE_INCOMPLETE", "交易日历未覆盖数据结束日期")
         sessions = self.calendars.list_sessions(
@@ -132,7 +137,7 @@ class MarketDataService:
             end=end,
             limit=limit,
         )
-        bar_dates = {row["trade_date"] for row in rows}
+        bar_dates = {cast(date, row["trade_date"]) for row in rows}
         session_dates = {item.session_date for item in sessions}
         missing = sorted(session_dates - bar_dates)
         out_of_calendar = sorted(bar_dates - session_dates)

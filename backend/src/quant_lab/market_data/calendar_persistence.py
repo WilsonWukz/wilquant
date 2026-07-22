@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, time
+from typing import cast
 from uuid import uuid4
 
 from sqlalchemy import (
@@ -127,7 +128,7 @@ class TradingCalendarRepository:
         sessions: list[dict[str, object]],
     ) -> TradingCalendarVersionModel:
         now = datetime.now(UTC)
-        dates = [item["session_date"] for item in sessions]
+        dates = [cast(date, item["session_date"]) for item in sessions]
         with Session(self.engine) as session:
             calendar = session.get(TradingCalendarModel, calendar_id)
             if calendar is None:

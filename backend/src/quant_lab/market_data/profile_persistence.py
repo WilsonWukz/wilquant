@@ -58,6 +58,7 @@ class MarketDataProfileRepository:
                 profile_id=str(uuid4()), status="ACTIVE", created_at=now, updated_at=now, **values
             )
             session.add(model)
+            session.flush()
             session.add(
                 MarketDataProfileAuditModel(
                     audit_id=str(uuid4()),
