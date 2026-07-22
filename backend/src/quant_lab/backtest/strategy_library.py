@@ -39,9 +39,7 @@ class StrategyVersionModel(Base):
 
 
 class StrategyLibrary:
-    allowed_types: ClassVar[frozenset[str]] = frozenset(
-        {"BUY_AND_HOLD", "TOP_N_MOMENTUM_ROTATION"}
-    )
+    allowed_types: ClassVar[frozenset[str]] = frozenset({"BUY_AND_HOLD", "TOP_N_MOMENTUM_ROTATION"})
 
     def __init__(self, engine) -> None:
         self.engine = engine
@@ -136,6 +134,22 @@ class StrategyLibrary:
             for value in values:
                 session.expunge(value)
             return values
+
+    def version(self, version_id: str):
+        with Session(self.engine) as session:
+            row = session.execute(
+                select(StrategyVersionModel, StrategyDefinitionModel.strategy_type)
+                .join(
+                    StrategyDefinitionModel,
+                    StrategyDefinitionModel.id == StrategyVersionModel.strategy_definition_id,
+                )
+                .where(StrategyVersionModel.id == version_id)
+            ).first()
+            if row is None:
+                raise DatasetError("STRATEGY_VERSION_NOT_FOUND", "策略版本不存在")
+            model, strategy_type = row
+            session.expunge(model)
+            return model, strategy_type
 
     def archive(self, definition_id: str):
         with Session(self.engine) as session:

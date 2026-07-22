@@ -5,6 +5,7 @@ from logging.config import fileConfig
 from sqlalchemy import engine_from_config, pool
 
 from alembic import context
+from quant_lab.backtest import strategy_library  # noqa: F401
 from quant_lab.core.config import Settings
 from quant_lab.datasets import persistence as dataset_persistence  # noqa: F401
 from quant_lab.db.sqlite import Base
@@ -15,7 +16,6 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 settings = Settings()
-settings.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
 config.set_main_option("sqlalchemy.url", settings.sqlite_url.replace("%", "%%"))
 target_metadata = Base.metadata
 

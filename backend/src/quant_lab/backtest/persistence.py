@@ -22,6 +22,9 @@ class BacktestRunModel(Base):
     market_data_snapshot_json: Mapped[str] = mapped_column(Text, nullable=False)
     market_data_snapshot_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     strategy_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    strategy_version_id: Mapped[str | None] = mapped_column(
+        ForeignKey("strategy_versions.id", ondelete="RESTRICT")
+    )
     strategy_spec_json: Mapped[str] = mapped_column(Text, nullable=False)
     strategy_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
     engine_version: Mapped[str] = mapped_column(String(64), nullable=False)

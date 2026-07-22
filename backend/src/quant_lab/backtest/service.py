@@ -14,6 +14,7 @@ from quant_lab.backtest.fingerprints import (
 from quant_lab.backtest.repository import BacktestRepository
 from quant_lab.backtest.rules import FeePolicy, InstrumentSpec, SlippagePolicy
 from quant_lab.backtest.strategies import BuyAndHoldStrategy
+from quant_lab.backtest.strategy_library import StrategyLibrary
 from quant_lab.datasets.errors import DatasetError
 
 ENGINE_VERSION = "backtest-engine@1"
@@ -43,11 +44,20 @@ class BacktestService:
         market_data_profile_id: str,
         strategy_type: str,
         strategy_spec: dict[str, object],
+        strategy_version_id: str | None = None,
         start_date: date,
         end_date: date,
         initial_cash: Decimal,
         config: dict[str, object],
     ) -> object:
+        if strategy_version_id and strategy_spec:
+            raise DatasetError("STRATEGY_SOURCE_CONFLICT", "不能同时提供策略版本和内嵌策略配置")
+        if not strategy_version_id and strategy_spec is None:
+            raise DatasetError("STRATEGY_SPEC_INVALID", "必须提供策略配置")
+        if strategy_version_id:
+            version, version_type = StrategyLibrary(self.runs.engine).version(strategy_version_id)
+            strategy_spec = json.loads(version.strategy_spec_json)
+            strategy_type = {"BUY_AND_HOLD": "BuyAndHold"}.get(version_type, version_type)
         if strategy_type != "BuyAndHold":
             raise DatasetError("STRATEGY_UNSUPPORTED", "当前仅支持内置BuyAndHold策略")
         if initial_cash <= 0 or start_date > end_date:
@@ -72,6 +82,7 @@ class BacktestService:
             market_data_snapshot_json=json.dumps(snapshot, sort_keys=True, default=str),
             market_data_snapshot_fingerprint=str(snapshot["snapshot_fingerprint"]),
             strategy_type=strategy_type,
+            strategy_version_id=strategy_version_id,
             strategy_spec_json=json.dumps(strategy_spec, sort_keys=True, default=str),
             strategy_fingerprint=str(strategy_fp),
             engine_version=ENGINE_VERSION,
