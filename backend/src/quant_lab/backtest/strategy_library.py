@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, datetime
 from typing import ClassVar
@@ -9,8 +10,8 @@ from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstr
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
 from quant_lab.datasets.errors import DatasetError
-from quant_lab.datasets.fingerprints import canonical_json, sha256_text
 from quant_lab.db.sqlite import Base
+from quant_lab.market_data.fingerprints import canonical_json_bytes
 
 
 class StrategyDefinitionModel(Base):
@@ -95,7 +96,7 @@ class StrategyLibrary:
         if definition.status != "ACTIVE":
             raise DatasetError("STRATEGY_ARCHIVED", "归档策略不能创建新版本")
         self._validate(definition.strategy_type, spec)
-        payload = canonical_json(spec)
+        payload = canonical_json_bytes(spec).decode("utf-8")
         now = datetime.now(UTC)
         with Session(self.engine) as session:
             session.connection().exec_driver_sql("BEGIN IMMEDIATE")
@@ -112,7 +113,9 @@ class StrategyLibrary:
                 strategy_definition_id=definition_id,
                 version=int(version) + 1,
                 strategy_spec_json=payload,
-                strategy_fingerprint=sha256_text(definition.strategy_type + ":" + payload),
+                strategy_fingerprint=hashlib.sha256(
+                    (definition.strategy_type + ":" + payload).encode("utf-8")
+                ).hexdigest(),
                 change_note=change_note,
                 created_at=now,
             )
