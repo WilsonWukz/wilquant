@@ -9,10 +9,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import Engine
 
 from quant_lab import __version__
+from quant_lab.api.calendars import router as calendars_router
 from quant_lab.api.data_imports import router as data_imports_router
 from quant_lab.api.datasets import publish_router
 from quant_lab.api.datasets import router as datasets_router
 from quant_lab.api.health import router as health_router
+from quant_lab.api.market_data import router as market_data_router
+from quant_lab.api.profiles import router as profiles_router
 from quant_lab.core.config import Settings
 from quant_lab.core.logging import configure_logging
 from quant_lab.datasets.publication import PublicationService
@@ -22,6 +25,11 @@ from quant_lab.datasets.repository import DatasetRepository
 from quant_lab.db.duckdb import DuckDbStore
 from quant_lab.db.sqlite import create_sqlite_engine
 from quant_lab.health.service import HealthService
+from quant_lab.market_data.calendar_persistence import TradingCalendarRepository
+from quant_lab.market_data.calendar_service import TradingCalendarImportService
+from quant_lab.market_data.consumption import MarketDataService
+from quant_lab.market_data.profile_persistence import MarketDataProfileRepository
+from quant_lab.market_data.profile_service import MarketDataProfileService
 from quant_lab.market_data.repository import MarketDataRepository
 from quant_lab.market_data.service import MarketDataImportService
 
@@ -45,6 +53,11 @@ def create_app(
         owned_engine = create_sqlite_engine(resolved_settings)
         repository = MarketDataRepository(owned_engine)
         app.state.market_data_repository = repository
+        app.state.calendar_repository = TradingCalendarRepository(owned_engine)
+        app.state.calendar_import_service = TradingCalendarImportService(
+            app.state.calendar_repository
+        )
+        app.state.profile_repository = MarketDataProfileRepository(owned_engine)
         app.state.dataset_repository = DatasetRepository(
             owned_engine,
             run_mode=resolved_settings.run_mode,
@@ -59,6 +72,18 @@ def create_app(
         )
         app.state.dataset_query_service = DatasetQueryService(
             app.state.dataset_repository, resolved_settings.published_directory
+        )
+        app.state.profile_service = MarketDataProfileService(
+            app.state.profile_repository,
+            app.state.calendar_repository,
+            app.state.dataset_query_service,
+            app.state.dataset_repository,
+        )
+        app.state.market_data_service = MarketDataService(
+            app.state.profile_repository,
+            app.state.calendar_repository,
+            app.state.dataset_query_service,
+            owned_engine,
         )
         app.state.publication_recovery = PublicationRecoveryService(
             app.state.dataset_repository,
@@ -99,6 +124,9 @@ def create_app(
     application.include_router(data_imports_router, prefix="/api/v1")
     application.include_router(datasets_router, prefix="/api/v1")
     application.include_router(publish_router, prefix="/api/v1")
+    application.include_router(calendars_router, prefix="/api/v1")
+    application.include_router(profiles_router, prefix="/api/v1")
+    application.include_router(market_data_router, prefix="/api/v1")
     return application
 
 

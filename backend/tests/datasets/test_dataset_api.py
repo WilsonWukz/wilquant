@@ -256,7 +256,10 @@ def test_openapi_contains_exact_dataset_routes() -> None:
         "/api/v1/datasets",
         "/api/v1/datasets/{dataset_id}/versions",
         "/api/v1/datasets/{dataset_id}/versions/{version_id}",
+        "/api/v1/datasets/{dataset_id}/versions/{version_id}/summary",
+        "/api/v1/datasets/{dataset_id}/versions/{version_id}/bars",
     }
+    assert "/api/v1/data-batches/{batch_id}/publish" in paths
     assert "post" in paths["/api/v1/datasets"]
     assert "get" in paths["/api/v1/datasets"]
     assert "get" in paths["/api/v1/datasets/{dataset_id}/versions"]

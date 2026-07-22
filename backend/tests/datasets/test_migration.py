@@ -13,6 +13,7 @@ from quant_lab.db.sqlite import create_sqlite_engine
 
 REVISION_0003 = "20260720_0003"
 REVISION_0004 = "20260720_0004"
+REVISION_HEAD = "20260722_0006"
 
 PREVIEW_COLUMNS = {
     "source_file_size",
@@ -112,7 +113,7 @@ def _assert_publication_schema(engine: Engine) -> None:
                 )
             )
         }
-    assert set(triggers) == PUBLISHED_TRIGGERS
+    assert set(triggers) >= PUBLISHED_TRIGGERS
     assert "OLD.status = 'PUBLISHED'" in triggers[
         "trg_dataset_versions_published_no_update"
     ]
@@ -132,9 +133,9 @@ def test_empty_database_upgrades_to_0004_head(tmp_path: Path, monkeypatch) -> No
     command.upgrade(config, "head")
 
     with engine.connect() as connection:
-        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
-            REVISION_0004
-        )
+        assert connection.execute(
+            text("SELECT version_num FROM alembic_version")
+        ).scalar_one() == REVISION_HEAD
     _assert_publication_schema(engine)
     engine.dispose()
 
@@ -233,9 +234,9 @@ def test_0004_downgrades_to_valid_0003_and_upgrades_again(
         engine, "data_quality_issues"
     )
     with engine.connect() as connection:
-        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
-            REVISION_0003
-        )
+        assert connection.execute(
+            text("SELECT version_num FROM alembic_version")
+        ).scalar_one() == REVISION_0003
 
     command.upgrade(config, "head")
     _assert_publication_schema(engine)
@@ -302,9 +303,9 @@ def test_downgrade_rejects_v1_issue_identity_collision_without_changing_0004(
 
     _assert_publication_schema(engine)
     with engine.connect() as connection:
-        assert connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one() == (
-            REVISION_0004
-        )
+        assert connection.execute(
+            text("SELECT version_num FROM alembic_version")
+        ).scalar_one() == REVISION_0004
         assert connection.execute(
             text(
                 "SELECT count(*) FROM data_quality_issues "

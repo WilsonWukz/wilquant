@@ -186,7 +186,7 @@ def publish_batch(request: Request, batch_id: str, payload: DatasetPublishReques
         return _server_error(error, request_id)
 
 
-@router.get("/{dataset_id}/versions/{version_id}/summary", include_in_schema=False)
+@router.get("/{dataset_id}/versions/{version_id}/summary")
 def dataset_summary(request: Request, dataset_id: str, version_id: str):
     request_id = str(uuid4())
     try:
@@ -197,7 +197,7 @@ def dataset_summary(request: Request, dataset_id: str, version_id: str):
         return _server_error(error, request_id)
 
 
-@router.get("/{dataset_id}/versions/{version_id}/bars", include_in_schema=False)
+@router.get("/{dataset_id}/versions/{version_id}/bars")
 def dataset_bars(
     request: Request,
     dataset_id: str,
