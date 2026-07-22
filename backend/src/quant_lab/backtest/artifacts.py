@@ -58,6 +58,7 @@ class BacktestArtifactWriter:
             manifest = {
                 **run_metadata,
                 "run_id": run_id,
+                "relative_path": f"backtests/{run_id}/manifest.json",
                 "artifacts": artifacts,
                 "created_at": datetime.now(UTC),
             }

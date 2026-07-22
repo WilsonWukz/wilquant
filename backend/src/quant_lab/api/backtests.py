@@ -61,9 +61,15 @@ def get_backtest(request: Request, run_id: str):
         return _error(error)
 
 
+@router.get("/{run_id}/metrics")
+@router.get("/{run_id}/equity")
+@router.get("/{run_id}/orders")
+@router.get("/{run_id}/fills")
+@router.get("/{run_id}/positions")
 @router.get("/{run_id}/{artifact_type}")
-def get_artifact(request: Request, run_id: str, artifact_type: str):
+def get_artifact(request: Request, run_id: str, artifact_type: str | None = None):
     try:
+        artifact_type = artifact_type or request.url.path.rsplit("/", 1)[-1]
         run = request.app.state.backtest_repository.get(run_id)
         artifact = next(
             (
