@@ -78,7 +78,7 @@ class BacktestRepository:
             session.expunge(model)
             return model
 
-    def list(self) -> tuple[BacktestRunModel, ...]:
+    def list_runs(self) -> tuple[BacktestRunModel, ...]:
         with Session(self.engine) as session:
             values = tuple(
                 session.scalars(

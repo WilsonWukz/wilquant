@@ -29,14 +29,15 @@ def calculate_metrics(
         if mean is not None and len(returns) > 1
         else None
     )
-    volatility = variance.sqrt() * Decimal(annualized_days).sqrt() if variance is not None else None
+    standard_deviation = variance.sqrt() if isinstance(variance, Decimal) else None
+    volatility = standard_deviation * Decimal(annualized_days).sqrt() if standard_deviation is not None else None
     sharpe = (
         (
             (mean - risk_free_rate / Decimal(annualized_days))
-            / (variance.sqrt())
+            / standard_deviation
             * Decimal(annualized_days).sqrt()
         )
-        if variance and variance > 0 and mean is not None
+        if standard_deviation and standard_deviation > 0 and mean is not None
         else None
     )
     peak = values[0]
