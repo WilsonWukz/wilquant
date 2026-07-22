@@ -3,11 +3,13 @@ import { NotFoundPage } from "./pages/NotFoundPage";
 import { SystemStatusPage } from "./pages/SystemStatusPage";
 import { DatasetsPage } from "./pages/DatasetsPage";
 import { MarketDataPage } from "./pages/MarketDataPage";
+import { BacktestsPage } from "./pages/BacktestsPage";
 
 export default function App() {
   if (window.location.pathname === "/") return <SystemStatusPage />;
   if (window.location.pathname === "/data/import") return <DataImportPage />;
   if (window.location.pathname === "/datasets") return <DatasetsPage />;
   if (window.location.pathname === "/market-data") return <MarketDataPage />;
+  if (window.location.pathname === "/backtests") return <BacktestsPage />;
   return <NotFoundPage />;
 }
