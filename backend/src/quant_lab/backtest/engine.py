@@ -19,10 +19,10 @@ from quant_lab.backtest.rules import (
     SlippagePolicy,
     apply_slippage,
     calculate_fees,
+    round_lot,
     validate_execution_price,
     validate_sell_quantity,
 )
-from quant_lab.backtest.strategies import BuyAndHoldStrategy
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,11 +41,12 @@ class BacktestEngine:
         self,
         *,
         sessions: tuple[date, ...],
-        bars_by_date: dict[date, dict[str, object]],
-        strategy: BuyAndHoldStrategy,
+        bars_by_date: dict[date, dict[str, dict[str, object]]],
+        strategy,
         initial_cash: Decimal,
         fee_policy: FeePolicy,
         slippage_policy: SlippagePolicy,
+        max_volume_participation: Decimal | None = None,
     ) -> BacktestResult:
         if initial_cash <= 0:
             raise BacktestRuleError("INITIAL_CASH_INVALID", "初始资金必须大于0")
@@ -56,20 +57,31 @@ class BacktestEngine:
         fills: list[SimulatedFill] = []
         equity_curve: list[EquityPoint] = []
         pending: list[OrderIntent] = []
+        instruments = {spec.instrument_id: spec for spec in strategy.instruments}
+        closes_history: dict[str, list[Decimal]] = {
+            instrument_id: [] for instrument_id in instruments
+        }
+        last_valid_close: dict[str, Decimal] = {}
         for index, trade_date in enumerate(ordered_sessions):
-            bar = bars_by_date.get(trade_date)
+            bars_today = bars_by_date.get(trade_date, {})
             next_date = ordered_sessions[index + 1] if index + 1 < len(ordered_sessions) else None
+            for instrument_id, bar in bars_today.items():
+                if bar.get("close") is not None:
+                    close = Decimal(str(bar["close"]))
+                    closes_history.setdefault(instrument_id, []).append(close)
+                    last_valid_close[instrument_id] = close
             for intent in tuple(pending):
                 pending.remove(intent)
                 order, fill = self._execute(
                     intent,
                     trade_date,
-                    bar,
+                    bars_today.get(intent.instrument_id),
                     cash,
                     lots,
-                    strategy.instrument,
+                    instruments[intent.instrument_id],
                     fee_policy,
                     slippage_policy,
+                    max_volume_participation,
                 )
                 orders.append(order)
                 if fill is not None:
@@ -90,56 +102,41 @@ class BacktestEngine:
                                 next_date or trade_date,
                             )
                         )
-            if bar is not None:
+            market_value, stale = self._market_value(lots, bars_today, last_valid_close)
+            if bars_today:
                 pending.extend(
                     strategy.on_close(
                         signal_date=trade_date,
                         execution_date=next_date,
-                        bar=bar,
+                        bars=bars_today,
                         cash=cash,
-                        equity=cash + self._market_value(lots, bar),
+                        equity=cash + market_value,
                         lots=tuple(lots),
+                        closes_history=closes_history,
+                        session_index=index,
                         fee_policy=fee_policy,
                     )
                 )
             equity_curve.append(
-                EquityPoint(
-                    trade_date,
-                    cash,
-                    self._market_value(lots, bar),
-                    cash + self._market_value(lots, bar),
-                    False,
-                )
+                EquityPoint(trade_date, cash, market_value, cash + market_value, stale)
             )
         return BacktestResult(tuple(orders), tuple(fills), tuple(lots), tuple(equity_curve), cash)
 
     def _execute(
-        self, intent, trade_date, bar, cash, lots, instrument, fee_policy, slippage_policy
+        self,
+        intent,
+        trade_date,
+        bar,
+        cash,
+        lots,
+        instrument,
+        fee_policy,
+        slippage_policy,
+        max_volume_participation,
     ):
         if bar is None or bar.get("open") is None:
-            order = SimulatedOrder(
-                f"order-{intent.client_order_id}",
-                intent.client_order_id,
-                intent.instrument_id,
-                intent.side,
-                intent.quantity,
-                0,
-                0,
-                None,
-                SimulatedOrderStatus.EXPIRED,
-                trade_date,
-                trade_date,
-                "BAR_MISSING",
-            )
-            return order, None
-        quantity = intent.quantity
-        if intent.side == OrderSide.SELL:
-            try:
-                quantity = validate_sell_quantity(
-                    tuple(lots), intent.instrument_id, quantity, trade_date
-                )
-            except BacktestRuleError as error:
-                return SimulatedOrder(
+            return (
+                SimulatedOrder(
                     f"order-{intent.client_order_id}",
                     intent.client_order_id,
                     intent.instrument_id,
@@ -148,11 +145,79 @@ class BacktestEngine:
                     0,
                     0,
                     None,
-                    SimulatedOrderStatus.REJECTED,
+                    SimulatedOrderStatus.EXPIRED,
                     trade_date,
                     trade_date,
-                    error.code,
-                ), None
+                    "BAR_MISSING",
+                ),
+                None,
+            )
+        requested = intent.quantity
+        quantity = requested
+        if intent.side == OrderSide.SELL:
+            try:
+                quantity = validate_sell_quantity(
+                    tuple(lots), intent.instrument_id, quantity, trade_date
+                )
+            except BacktestRuleError as error:
+                return (
+                    SimulatedOrder(
+                        f"order-{intent.client_order_id}",
+                        intent.client_order_id,
+                        intent.instrument_id,
+                        intent.side,
+                        intent.quantity,
+                        0,
+                        0,
+                        None,
+                        SimulatedOrderStatus.REJECTED,
+                        trade_date,
+                        trade_date,
+                        error.code,
+                    ),
+                    None,
+                )
+        if max_volume_participation is not None:
+            volume = bar.get("volume")
+            if volume is None or Decimal(str(volume)) <= 0:
+                return (
+                    SimulatedOrder(
+                        f"order-{intent.client_order_id}",
+                        intent.client_order_id,
+                        intent.instrument_id,
+                        intent.side,
+                        intent.quantity,
+                        0,
+                        0,
+                        None,
+                        SimulatedOrderStatus.REJECTED,
+                        trade_date,
+                        trade_date,
+                        "VOLUME_UNAVAILABLE",
+                    ),
+                    None,
+                )
+            max_raw = int(Decimal(str(volume)) * max_volume_participation)
+            volume_limited = round_lot(max_raw, instrument.lot_size)
+            if volume_limited < instrument.lot_size:
+                return (
+                    SimulatedOrder(
+                        f"order-{intent.client_order_id}",
+                        intent.client_order_id,
+                        intent.instrument_id,
+                        intent.side,
+                        intent.quantity,
+                        0,
+                        0,
+                        None,
+                        SimulatedOrderStatus.REJECTED,
+                        trade_date,
+                        trade_date,
+                        "VOLUME_TOO_LOW",
+                    ),
+                    None,
+                )
+            quantity = min(quantity, volume_limited)
         raw = Decimal(str(bar["open"]))
         try:
             validate_execution_price(
@@ -174,30 +239,38 @@ class BacktestEngine:
             if intent.side == OrderSide.BUY and quantity * fill_price + total > cash:
                 raise BacktestRuleError("INSUFFICIENT_CASH", "现金不足")
         except BacktestRuleError as error:
-            return SimulatedOrder(
-                f"order-{intent.client_order_id}",
-                intent.client_order_id,
-                intent.instrument_id,
-                intent.side,
-                intent.quantity,
-                0,
-                0,
+            return (
+                SimulatedOrder(
+                    f"order-{intent.client_order_id}",
+                    intent.client_order_id,
+                    intent.instrument_id,
+                    intent.side,
+                    intent.quantity,
+                    0,
+                    0,
+                    None,
+                    SimulatedOrderStatus.REJECTED,
+                    trade_date,
+                    trade_date,
+                    error.code,
+                ),
                 None,
-                SimulatedOrderStatus.REJECTED,
-                trade_date,
-                trade_date,
-                error.code,
-            ), None
+            )
+        status = (
+            SimulatedOrderStatus.PARTIALLY_FILLED
+            if quantity < requested
+            else SimulatedOrderStatus.FILLED
+        )
         order = SimulatedOrder(
             f"order-{intent.client_order_id}",
             intent.client_order_id,
             intent.instrument_id,
             intent.side,
-            intent.quantity,
+            requested,
             quantity,
             quantity,
             fill_price,
-            SimulatedOrderStatus.FILLED,
+            status,
             trade_date,
             trade_date,
             None,
@@ -219,11 +292,22 @@ class BacktestEngine:
         )
 
     @staticmethod
-    def _market_value(lots, bar):
-        if bar is None:
-            return Decimal("0")
-        close = Decimal(str(bar["close"]))
-        return sum(lot.remaining_quantity * close for lot in lots)
+    def _market_value(
+        lots: list[PositionLot],
+        bars_today: dict[str, dict[str, object]],
+        last_valid_close: dict[str, Decimal],
+    ) -> tuple[Decimal, bool]:
+        total = Decimal("0")
+        stale = False
+        for lot in lots:
+            bar = bars_today.get(lot.instrument_id)
+            if bar is not None and bar.get("close") is not None:
+                close = Decimal(str(bar["close"]))
+            else:
+                close = last_valid_close.get(lot.instrument_id, lot.cost_price)
+                stale = True
+            total += lot.remaining_quantity * close
+        return total, stale
 
 
 def _decimal_or_none(value: object) -> Decimal | None:

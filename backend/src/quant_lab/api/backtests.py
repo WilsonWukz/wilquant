@@ -27,6 +27,7 @@ def create_backtest(request: Request, payload: BacktestCreateRequest):
             "fee_policy": payload.fee_policy,
             "slippage_policy": payload.slippage_policy,
             "max_volume_participation": payload.max_volume_participation,
+            "instrument_metadata_overrides": payload.instrument_metadata_overrides,
         }
         return request.app.state.backtest_service.create_run(
             **payload.model_dump(
