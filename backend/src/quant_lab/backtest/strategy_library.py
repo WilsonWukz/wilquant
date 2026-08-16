@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from datetime import UTC, datetime
 from typing import ClassVar
@@ -9,6 +8,7 @@ from uuid import uuid4
 from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, func, select
 from sqlalchemy.orm import Mapped, Session, mapped_column
 
+from quant_lab.backtest.fingerprints import fingerprint_strategy
 from quant_lab.datasets.errors import DatasetError
 from quant_lab.db.sqlite import Base
 from quant_lab.market_data.fingerprints import canonical_json_bytes
@@ -39,6 +39,25 @@ class StrategyVersionModel(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+_UNSAFE_SPEC_KEYS = frozenset({"python", "code", "expression", "sql", "script"})
+
+
+def contains_unsafe_spec_key(value: object) -> bool:
+    """Recursively reject dangerous keys anywhere in a strategy spec structure."""
+
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if isinstance(key, str) and key.lower() in _UNSAFE_SPEC_KEYS:
+                return True
+            if contains_unsafe_spec_key(item):
+                return True
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            if contains_unsafe_spec_key(item):
+                return True
+    return False
+
+
 class StrategyLibrary:
     allowed_types: ClassVar[frozenset[str]] = frozenset({"BUY_AND_HOLD", "TOP_N_MOMENTUM_ROTATION"})
 
@@ -48,7 +67,7 @@ class StrategyLibrary:
     def _validate(self, strategy_type: str, spec: dict[str, object]) -> None:
         if strategy_type not in self.allowed_types:
             raise DatasetError("STRATEGY_UNSUPPORTED", "策略类型不受支持")
-        if any(key.lower() in {"python", "code", "expression", "sql", "script"} for key in spec):
+        if contains_unsafe_spec_key(spec):
             raise DatasetError("STRATEGY_SPEC_INVALID", "策略配置不允许执行代码")
         if len(json.dumps(spec, ensure_ascii=False, default=str)) > 10000:
             raise DatasetError("STRATEGY_SPEC_INVALID", "策略配置过大")
@@ -113,14 +132,13 @@ class StrategyLibrary:
                 strategy_definition_id=definition_id,
                 version=int(version) + 1,
                 strategy_spec_json=payload,
-                strategy_fingerprint=hashlib.sha256(
-                    (definition.strategy_type + ":" + payload).encode("utf-8")
-                ).hexdigest(),
+                strategy_fingerprint=fingerprint_strategy(definition.strategy_type, spec),
                 change_note=change_note,
                 created_at=now,
             )
             session.add(model)
             session.commit()
+            session.refresh(model)
             session.expunge(model)
             return model
 
@@ -162,5 +180,6 @@ class StrategyLibrary:
             model.status = "ARCHIVED"
             model.updated_at = datetime.now(UTC)
             session.commit()
+            session.refresh(model)
             session.expunge(model)
             return model
