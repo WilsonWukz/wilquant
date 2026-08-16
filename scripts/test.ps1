@@ -54,6 +54,16 @@ try {
     if ($overlap) {
         throw "Dataset shards overlap: [$($overlap -join ', ')]"
     }
+    $actualFoundationFiles = @(
+        Get-ChildItem -Path 'backend/tests' -Filter 'test_*.py' -File |
+            ForEach-Object { 'backend/tests/' + $_.Name }
+    ) | Sort-Object
+    $declaredFoundationFiles = @($foundationFiles) | Sort-Object
+    if (($actualFoundationFiles -join [Environment]::NewLine) -ne ($declaredFoundationFiles -join [Environment]::NewLine)) {
+        $missing = @($actualFoundationFiles) | Where-Object { $_ -notin $declaredFoundationFiles }
+        $extra = @($declaredFoundationFiles) | Where-Object { $_ -notin $actualFoundationFiles }
+        throw "Foundation coverage mismatch. Missing: [$($missing -join ', ')] Extra: [$($extra -join ', ')]"
+    }
 
     function Invoke-PytestShard {
         param(
