@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from pathlib import Path
 
 from sqlalchemy import DateTime, Engine, String, Text, create_engine, event, text
+from sqlalchemy.engine import make_url
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from quant_lab.core.config import Settings
@@ -26,10 +28,29 @@ class AppMetadata(Base):
     )
 
 
+def ensure_sqlite_database_parent(database_url: str) -> None:
+    """Create only the direct parent directory of a local SQLite file database.
+
+    This is the narrow SQLite bootstrap contract. FastAPI owns the full runtime
+    tree via lifespan startup, but Alembic can run before that tree exists, so
+    the database file's immediate parent must be ensured right before the engine
+    opens it. In-memory and non-SQLite URLs are no-ops, and importing this module
+    has no filesystem side effect.
+    """
+
+    url = make_url(database_url)
+    if url.get_backend_name() != "sqlite":
+        return
+    database = url.database
+    if not database or database == ":memory:":
+        return
+    Path(database).parent.mkdir(parents=True, exist_ok=True)
+
+
 def create_sqlite_engine(settings: Settings) -> Engine:
     """Create a SQLite engine with conservative local-process settings."""
 
-    settings.sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_sqlite_database_parent(settings.sqlite_url)
     engine = create_engine(
         settings.sqlite_url,
         connect_args={"check_same_thread": False, "timeout": 5.0},

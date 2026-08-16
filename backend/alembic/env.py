@@ -8,7 +8,7 @@ from alembic import context
 from quant_lab.backtest import strategy_library  # noqa: F401
 from quant_lab.core.config import Settings
 from quant_lab.datasets import persistence as dataset_persistence  # noqa: F401
-from quant_lab.db.sqlite import Base
+from quant_lab.db.sqlite import Base, ensure_sqlite_database_parent
 from quant_lab.market_data import persistence as market_data_persistence  # noqa: F401
 
 config = context.config
@@ -33,6 +33,7 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
+    ensure_sqlite_database_parent(settings.sqlite_url)
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
