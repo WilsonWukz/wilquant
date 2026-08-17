@@ -4,11 +4,15 @@ import { ResearchPage } from "./ResearchPage";
 
 beforeEach(() => vi.restoreAllMocks());
 
-test("renders research workspace tabs", () => {
+test("renders research workspace tabs with default selection", () => {
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({ items: [] }) }));
   render(<ResearchPage />);
-  expect(screen.getByText("量化研究工作台")).toBeInTheDocument();
-  expect(screen.getByText("实验")).toBeInTheDocument();
+  expect(screen.getByRole("heading", { name: "量化研究工作台", level: 1 })).toBeInTheDocument();
+  for (const label of ["实验", "比较", "诊断", "日志", "报告"]) {
+    expect(screen.getByRole("button", { name: label })).toBeInTheDocument();
+  }
+  expect(screen.getByRole("button", { name: "实验" })).toHaveAttribute("aria-pressed", "true");
+  expect(screen.getByRole("button", { name: "比较" })).toHaveAttribute("aria-pressed", "false");
 });
 
 test("renders experiment list", async () => {
