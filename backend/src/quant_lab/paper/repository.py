@@ -713,3 +713,94 @@ class PaperRepository:
             session.refresh(model)
             session.expunge(model)
             return model
+
+    # --- policy / decision queries ---
+    def get_risk_policy(self, policy_id: str) -> PaperRiskPolicyModel:
+        with Session(self.engine) as session:
+            model = session.get(PaperRiskPolicyModel, policy_id)
+            if model is None:
+                raise PaperError("RISK_POLICY_NOT_FOUND", "风控策略不存在")
+            session.expunge(model)
+            return model
+
+    def list_risk_policies(
+        self, paper_account_id: str
+    ) -> tuple[PaperRiskPolicyModel, ...]:
+        with Session(self.engine) as session:
+            values = tuple(
+                session.scalars(
+                    select(PaperRiskPolicyModel).where(
+                        PaperRiskPolicyModel.paper_account_id == paper_account_id
+                    )
+                )
+            )
+            for value in values:
+                session.expunge(value)
+            return values
+
+    def get_latest_policy_version(
+        self, risk_policy_id: str
+    ) -> PaperRiskPolicyVersionModel:
+        with Session(self.engine) as session:
+            model = session.scalar(
+                select(PaperRiskPolicyVersionModel)
+                .where(PaperRiskPolicyVersionModel.risk_policy_id == risk_policy_id)
+                .order_by(PaperRiskPolicyVersionModel.version.desc())
+                .limit(1)
+            )
+            if model is None:
+                raise PaperError("RISK_POLICY_VERSION_NOT_FOUND", "风控策略版本不存在")
+            session.expunge(model)
+            return model
+
+    def get_risk_decision_by_intent(self, order_intent_id: str) -> PaperRiskDecisionModel | None:
+        with Session(self.engine) as session:
+            model = session.scalar(
+                select(PaperRiskDecisionModel).where(
+                    PaperRiskDecisionModel.order_intent_id == order_intent_id
+                )
+            )
+            if model is not None:
+                session.expunge(model)
+            return model
+
+    def update_account_status(self, account_id: str, status: str) -> PaperAccountModel:
+        now = datetime.now(UTC)
+        with Session(self.engine) as session:
+            model = session.get(PaperAccountModel, account_id)
+            if model is None:
+                raise PaperError("PAPER_ACCOUNT_NOT_FOUND", "模拟账户不存在")
+            model.status = status
+            model.updated_at = now
+            session.commit()
+            session.refresh(model)
+            session.expunge(model)
+            return model
+
+    def count_open_orders(self, paper_session_id: str) -> int:
+        with Session(self.engine) as session:
+            return int(
+                session.scalar(
+                    select(func.count()).where(
+                        PaperOrderModel.paper_session_id == paper_session_id,
+                        PaperOrderModel.status.in_(
+                            ("CREATED", "APPROVED", "SUBMITTED", "PARTIALLY_FILLED")
+                        ),
+                    )
+                )
+                or 0
+            )
+
+    def get_latest_snapshot(
+        self, paper_account_id: str
+    ) -> PaperAccountSnapshotModel | None:
+        with Session(self.engine) as session:
+            model = session.scalar(
+                select(PaperAccountSnapshotModel)
+                .where(PaperAccountSnapshotModel.paper_account_id == paper_account_id)
+                .order_by(PaperAccountSnapshotModel.session_date.desc())
+                .limit(1)
+            )
+            if model is not None:
+                session.expunge(model)
+            return model
