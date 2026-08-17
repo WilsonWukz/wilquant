@@ -14,12 +14,15 @@ from quant_lab.api.calendars import router as calendars_router
 from quant_lab.api.data_imports import router as data_imports_router
 from quant_lab.api.datasets import publish_router
 from quant_lab.api.datasets import router as datasets_router
+from quant_lab.api.experiments import router as experiments_router
 from quant_lab.api.health import router as health_router
 from quant_lab.api.market_data import router as market_data_router
 from quant_lab.api.profiles import router as profiles_router
+from quant_lab.api.research_journal import router as research_journal_router
 from quant_lab.api.strategies import router as strategies_router
 from quant_lab.backtest.repository import BacktestRepository
 from quant_lab.backtest.service import BacktestService
+from quant_lab.backtest.strategy_library import StrategyLibrary
 from quant_lab.core.config import Settings
 from quant_lab.core.logging import configure_logging
 from quant_lab.datasets.publication import PublicationService
@@ -36,6 +39,14 @@ from quant_lab.market_data.profile_persistence import MarketDataProfileRepositor
 from quant_lab.market_data.profile_service import MarketDataProfileService
 from quant_lab.market_data.repository import MarketDataRepository
 from quant_lab.market_data.service import MarketDataImportService
+from quant_lab.research.artifacts import ArtifactReader
+from quant_lab.research.comparability import (
+    BacktestComparabilityService,
+    BacktestComparisonService,
+)
+from quant_lab.research.diagnostics import ResearchDiagnosticsService
+from quant_lab.research.reports import ResearchReportService
+from quant_lab.research.repository import ResearchRepository
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +115,24 @@ def create_app(
             resolved_settings.published_directory,
         )
         app.state.publication_recovery.recover()
+        app.state.research_repository = ResearchRepository(owned_engine)
+        app.state.research_reader = ArtifactReader(
+            resolved_settings.runtime_root or resolved_settings.project_root
+        )
+        app.state.comparability = BacktestComparabilityService()
+        app.state.comparison = BacktestComparisonService(
+            app.state.backtest_repository,
+            app.state.research_reader,
+            StrategyLibrary(owned_engine),
+            app.state.comparability,
+        )
+        app.state.diagnostics = ResearchDiagnosticsService(app.state.research_reader)
+        app.state.reports = ResearchReportService(
+            app.state.backtest_repository,
+            app.state.research_reader,
+            app.state.diagnostics,
+            app.state.research_repository,
+        )
         if health_service is None:
             app.state.health_service = HealthService(
                 owned_engine,
@@ -130,7 +159,7 @@ def create_app(
         CORSMiddleware,
         allow_origins=resolved_settings.frontend_origins,
         allow_credentials=False,
-        allow_methods=["GET", "POST", "PATCH"],
+        allow_methods=["GET", "POST", "PATCH", "DELETE"],
         allow_headers=["Accept", "Content-Type"],
     )
     application.include_router(health_router, prefix="/api/v1")
@@ -142,6 +171,8 @@ def create_app(
     application.include_router(market_data_router, prefix="/api/v1")
     application.include_router(backtests_router, prefix="/api/v1")
     application.include_router(strategies_router, prefix="/api/v1")
+    application.include_router(experiments_router, prefix="/api/v1")
+    application.include_router(research_journal_router, prefix="/api/v1")
     return application
 
 

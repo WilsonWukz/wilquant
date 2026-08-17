@@ -14,7 +14,13 @@ router = APIRouter(prefix="/backtests", tags=["backtests"])
 
 
 def _error(error: DatasetError) -> JSONResponse:
-    code = 404 if error.category == "BACKTEST_NOT_FOUND" else 400
+    code = (
+        404
+        if error.category in {"BACKTEST_NOT_FOUND", "BACKTEST_ARTIFACT_NOT_FOUND"}
+        else 409
+        if error.category in {"RUN_NOT_SUCCEEDED", "ARTIFACT_INTEGRITY_FAILURE"}
+        else 400
+    )
     return JSONResponse(
         status_code=code, content={"error_code": error.category, "message": error.safe_message}
     )
@@ -92,5 +98,27 @@ def get_artifact(request: Request, run_id: str, artifact_type: str | None = None
             "row_count": artifact.row_count,
             "path_exists": path.exists(),
         }
+    except DatasetError as error:
+        return _error(error)
+
+
+@router.get("/{run_id}/diagnostics")
+def get_diagnostics(request: Request, run_id: str):
+    try:
+        run = request.app.state.backtest_repository.get(run_id)
+        if run.status != "SUCCEEDED":
+            raise DatasetError("RUN_NOT_SUCCEEDED", "回测未成功完成")
+        artifacts = request.app.state.backtest_repository.artifacts(run_id)
+        return request.app.state.diagnostics.compute(run, artifacts)
+    except DatasetError as error:
+        return _error(error)
+
+
+@router.get("/{run_id}/research-report")
+def get_research_report(request: Request, run_id: str):
+    try:
+        run = request.app.state.backtest_repository.get(run_id)
+        strategy_identity = request.app.state.comparison._strategy_identity(run)
+        return request.app.state.reports.run_report(run, strategy_identity)
     except DatasetError as error:
         return _error(error)
