@@ -88,6 +88,7 @@ try {
     Invoke-PytestShard -Name 'market-data' -Paths @('backend/tests/market_data')
     Invoke-PytestShard -Name 'backtest' -Paths @('backend/tests/backtest')
     Invoke-PytestShard -Name 'research' -Paths @('backend/tests/research')
+    Invoke-PytestShard -Name 'paper' -Paths @('backend/tests/paper')
     Invoke-ProjectCommand -FilePath $pythonPath -ArgumentList @(
         '-m', 'ruff', 'check', 'backend/src', 'backend/tests', 'backend/alembic'
     )
