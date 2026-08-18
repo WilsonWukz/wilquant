@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -9,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 from alembic.config import Config
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 
 from alembic import command
@@ -18,6 +20,7 @@ from quant_lab.datasets.publication import PublicationService
 from quant_lab.datasets.query import DatasetQueryService
 from quant_lab.datasets.repository import DatasetIdentity, DatasetRepository
 from quant_lab.db.sqlite import create_sqlite_engine
+from quant_lab.main import create_app
 from quant_lab.market_data.calendar_persistence import TradingCalendarRepository
 from quant_lab.market_data.consumption import MarketDataService
 from quant_lab.market_data.profile_persistence import MarketDataProfileRepository
@@ -155,14 +158,7 @@ def _calendar_sessions() -> list[dict[str, object]]:
     return sessions
 
 
-@pytest.fixture
-def paper_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    settings = Settings(project_root=tmp_path, runtime_root=tmp_path / "runtime")
-    monkeypatch.setenv("QUANT_LAB_PROJECT_ROOT", str(tmp_path))
-    monkeypatch.setenv("QUANT_LAB_RUNTIME_ROOT", str(settings.runtime_root))
-    command.upgrade(Config("backend/alembic.ini"), "head")
-    engine = create_sqlite_engine(settings)
-
+def seed_paper_environment(engine, settings) -> SimpleNamespace:
     calendars = TradingCalendarRepository(engine)
     calendar = calendars.create_calendar(
         name="CN",
@@ -233,13 +229,31 @@ def paper_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         )
 
     dataset_query = DatasetQueryService(drepo, settings.published_directory)
+    return SimpleNamespace(
+        calendars=calendars,
+        calendar_id=calendar.calendar_id,
+        calendar_version_id=calendar_version.trading_calendar_version_id,
+        dataset_id=dataset.dataset_id,
+        dataset_version_id=published.dataset_version_id,
+        dataset_query=dataset_query,
+    )
+
+
+@pytest.fixture
+def paper_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    settings = Settings(project_root=tmp_path, runtime_root=tmp_path / "runtime")
+    monkeypatch.setenv("QUANT_LAB_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("QUANT_LAB_RUNTIME_ROOT", str(settings.runtime_root))
+    command.upgrade(Config("backend/alembic.ini"), "head")
+    engine = create_sqlite_engine(settings)
+    seeded = seed_paper_environment(engine, settings)
     market_data = MarketDataService(
-        MarketDataProfileRepository(engine), calendars, dataset_query, engine
+        MarketDataProfileRepository(engine), seeded.calendars, seeded.dataset_query, engine
     )
     repository = PaperRepository(engine)
     risk_service = PaperRiskService(repository, RiskEngine())
     session_service = PaperSessionService(
-        engine, repository, market_data, calendars, dataset_query, risk_service
+        engine, repository, market_data, seeded.calendars, seeded.dataset_query, risk_service
     )
 
     yield SimpleNamespace(
@@ -247,18 +261,38 @@ def paper_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         settings=settings,
         repository=repository,
         market_data=market_data,
-        calendars=calendars,
-        dataset_query=dataset_query,
+        calendars=seeded.calendars,
+        dataset_query=seeded.dataset_query,
         risk_service=risk_service,
         session_service=session_service,
         profile_id="p",
-        calendar_id=calendar.calendar_id,
-        calendar_version_id=calendar_version.trading_calendar_version_id,
-        dataset_id=dataset.dataset_id,
-        dataset_version_id=published.dataset_version_id,
+        calendar_id=seeded.calendar_id,
+        calendar_version_id=seeded.calendar_version_id,
+        dataset_id=seeded.dataset_id,
+        dataset_version_id=seeded.dataset_version_id,
         open_dates=list(OPEN_DATES),
     )
     engine.dispose()
+
+
+@pytest.fixture
+async def paper_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> AsyncIterator[AsyncClient]:
+    settings = Settings(project_root=tmp_path, runtime_root=tmp_path / "runtime")
+    monkeypatch.setenv("QUANT_LAB_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("QUANT_LAB_RUNTIME_ROOT", str(settings.runtime_root))
+    command.upgrade(Config("backend/alembic.ini"), "head")
+    seed_engine = create_sqlite_engine(settings)
+    seed_paper_environment(seed_engine, settings)
+    seed_engine.dispose()
+    app = create_app(settings)
+    transport = ASGITransport(app=app)
+    async with (
+        app.router.lifespan_context(app),
+        AsyncClient(transport=transport, base_url="http://testserver") as client,
+    ):
+        yield client
 
 
 def make_buy_and_hold_strategy(engine, *, instrument_id: str = "600000.XSHG") -> str:

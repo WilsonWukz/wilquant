@@ -819,10 +819,10 @@ def test_freeze_cancels_pending_orders(paper_env):
     env = paper_env
     account_id, started = _running_session(env)
     _ensure_policy(env, account_id)
-    # 一个未来 SUBMITTED 订单（pending）
+    # 一个未来 SUBMITTED 订单 (pending)
     _submitted_order(env, account_id, started.paper_session_id, instrument_id="600000.XSHG",
                      side="BUY", quantity=100, execution_date=D3)
-    # 历史高点 snapshot，使 D1 估值产生 -50% 回撤，触发 drawdown/daily-loss freeze
+    # 历史高点 snapshot, 使 D1 估值产生 -50% 回撤, 触发 drawdown/daily-loss freeze
     env.repository.create_snapshot(
         paper_account_id=account_id,
         paper_session_id=started.paper_session_id,
