@@ -33,3 +33,15 @@ it("shows a safe not-found page", () => {
 
   expect(screen.getByRole("heading", { name: "页面不存在" })).toBeInTheDocument();
 });
+
+it("routes to the paper page", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn().mockResolvedValue(new Response(JSON.stringify({ items: [] }), { status: 200 })),
+  );
+  window.history.replaceState({}, "", "/paper");
+
+  render(<App />);
+
+  expect(await screen.findByRole("heading", { name: "PAPER · 模拟交易工作台", level: 1 })).toBeInTheDocument();
+});
