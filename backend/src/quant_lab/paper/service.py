@@ -55,7 +55,7 @@ from quant_lab.paper.models import (
 )
 from quant_lab.paper.repository import PaperRepository
 from quant_lab.paper.risk_service import PaperRiskService
-from quant_lab.paper.state import validate_session_transition
+from quant_lab.paper.state import validate_order_transition, validate_session_transition
 
 
 class StrategyLike(Protocol):
@@ -1341,6 +1341,107 @@ class PaperSessionService:
             )
             session.commit()
 
+    # --- manual intent ---
+    def create_manual_intent(
+        self,
+        *,
+        paper_session_id: str,
+        idempotency_key: str,
+        instrument_id: str,
+        side: str,
+        quantity: int,
+        order_type: str,
+        limit_price: Decimal | None,
+        reason: str | None,
+        metadata: dict[str, object],
+    ) -> PaperOrderIntentModel:
+        session_model = self.repository.get_session(paper_session_id)
+        if session_model.status != PaperSessionStatus.RUNNING.value:
+            raise PaperError("SESSION_NOT_RUNNING", "会话不在运行中")
+        signal_session_date = session_model.current_session_date
+        if signal_session_date is None:
+            raise PaperError("SESSION_NOT_STARTED", "会话尚未推进到任何交易日")
+        snapshot = cast(dict[str, object], json.loads(session_model.market_data_snapshot_json))
+        open_dates = sorted(
+            item.session_date
+            for item in self.calendars.list_sessions(
+                str(snapshot["calendar_version_id"]), open_only=True, limit=5000
+            )
+        )
+        intended = next((d for d in open_dates if d > signal_session_date), None)
+        if intended is None:
+            raise PaperError("NO_FUTURE_SESSION", "没有可执行的后续交易日")
+
+        with Session(self.engine) as session:
+            existing = session.scalar(
+                select(PaperOrderIntentModel).where(
+                    PaperOrderIntentModel.paper_session_id == paper_session_id,
+                    PaperOrderIntentModel.idempotency_key == idempotency_key,
+                )
+            )
+            if existing is not None:
+                if _intent_matches(
+                    existing, instrument_id, side, quantity, order_type, limit_price
+                ):
+                    session.expunge(existing)
+                    return existing
+                raise PaperError("IDEMPOTENCY_KEY_CONFLICT", "相同幂等键但请求内容不一致")
+
+        return self.repository.create_intent(
+            paper_session_id=paper_session_id,
+            source_type=IntentSourceType.MANUAL.value,
+            source_id=None,
+            instrument_id=instrument_id,
+            side=side,
+            quantity=quantity,
+            order_type=order_type,
+            limit_price=limit_price,
+            signal_session_date=signal_session_date,
+            intended_execution_session=intended,
+            strategy_version_id=None,
+            reason=reason,
+            metadata_json=json.dumps(metadata, default=str),
+            idempotency_key=idempotency_key,
+        )
+
+    # --- cancel order ---
+    def cancel_order(
+        self, order_id: str, *, expected_status: str | None = None
+    ) -> PaperOrderModel:
+        now = datetime.now(UTC)
+        with Session(self.engine) as session:
+            order = session.get(PaperOrderModel, order_id)
+            if order is None:
+                raise PaperError("PAPER_ORDER_NOT_FOUND", "模拟订单不存在")
+            if expected_status is not None and order.status != expected_status:
+                raise PaperError("ORDER_STATE_CONFLICT", "订单状态与预期不符")
+            current = PaperOrderStatus(order.status)
+            if current not in (
+                PaperOrderStatus.APPROVED,
+                PaperOrderStatus.SUBMITTED,
+            ):
+                raise PaperError("ORDER_STATE_CONFLICT", "订单状态不允许取消")
+            validate_order_transition(current, PaperOrderStatus.CANCELLED)
+            order.status = PaperOrderStatus.CANCELLED.value
+            order.updated_at = now
+            paper_session = session.get(PaperSessionModel, order.paper_session_id)
+            session.add(
+                PaperAuditEventModel(
+                    id=str(uuid4()),
+                    paper_account_id=(
+                        paper_session.paper_account_id if paper_session is not None else ""
+                    ),
+                    paper_session_id=order.paper_session_id,
+                    event_type=AuditEventType.ORDER_CANCELLED.value,
+                    payload_json=json.dumps({"order_id": order.id, "reason": "MANUAL"}),
+                    created_at=now,
+                )
+            )
+            session.commit()
+            session.refresh(order)
+            session.expunge(order)
+            return order
+
     @staticmethod
     def _view(model: PaperSessionModel) -> SessionView:
         return SessionView(
@@ -1353,3 +1454,20 @@ class PaperSessionService:
             replay_start_date=model.replay_start_date,
             replay_end_date=model.replay_end_date,
         )
+
+
+def _intent_matches(
+    intent: PaperOrderIntentModel,
+    instrument_id: str,
+    side: str,
+    quantity: int,
+    order_type: str,
+    limit_price: Decimal | None,
+) -> bool:
+    return (
+        intent.instrument_id == instrument_id
+        and intent.side == side
+        and intent.quantity == quantity
+        and intent.order_type == order_type
+        and intent.limit_price == limit_price
+    )

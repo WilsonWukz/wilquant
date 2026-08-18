@@ -17,6 +17,7 @@ from quant_lab.api.datasets import router as datasets_router
 from quant_lab.api.experiments import router as experiments_router
 from quant_lab.api.health import router as health_router
 from quant_lab.api.market_data import router as market_data_router
+from quant_lab.api.paper import router as paper_router
 from quant_lab.api.profiles import router as profiles_router
 from quant_lab.api.research_journal import router as research_journal_router
 from quant_lab.api.strategies import router as strategies_router
@@ -39,6 +40,11 @@ from quant_lab.market_data.profile_persistence import MarketDataProfileRepositor
 from quant_lab.market_data.profile_service import MarketDataProfileService
 from quant_lab.market_data.repository import MarketDataRepository
 from quant_lab.market_data.service import MarketDataImportService
+from quant_lab.paper.policy_service import PaperRiskPolicyService
+from quant_lab.paper.repository import PaperRepository
+from quant_lab.paper.risk import RiskEngine
+from quant_lab.paper.risk_service import PaperRiskService
+from quant_lab.paper.service import PaperSessionService
 from quant_lab.research.artifacts import ArtifactReader
 from quant_lab.research.comparability import (
     BacktestComparabilityService,
@@ -109,6 +115,21 @@ def create_app(
             app.state.backtest_repository,
             resolved_settings,
         )
+        app.state.paper_repository = PaperRepository(owned_engine)
+        app.state.paper_risk_service = PaperRiskService(
+            app.state.paper_repository, RiskEngine()
+        )
+        app.state.paper_risk_policy_service = PaperRiskPolicyService(
+            app.state.paper_repository
+        )
+        app.state.paper_session_service = PaperSessionService(
+            owned_engine,
+            app.state.paper_repository,
+            app.state.market_data_service,
+            app.state.calendar_repository,
+            app.state.dataset_query_service,
+            app.state.paper_risk_service,
+        )
         app.state.publication_recovery = PublicationRecoveryService(
             app.state.dataset_repository,
             resolved_settings.publication_staging_directory,
@@ -170,6 +191,7 @@ def create_app(
     application.include_router(profiles_router, prefix="/api/v1")
     application.include_router(market_data_router, prefix="/api/v1")
     application.include_router(backtests_router, prefix="/api/v1")
+    application.include_router(paper_router, prefix="/api/v1")
     application.include_router(strategies_router, prefix="/api/v1")
     application.include_router(experiments_router, prefix="/api/v1")
     application.include_router(research_journal_router, prefix="/api/v1")

@@ -164,11 +164,20 @@ class PaperRepository:
             session.expunge(model)
             return model
 
-    def list_sessions(self, paper_account_id: str | None = None) -> tuple[PaperSessionModel, ...]:
+    def list_sessions(
+        self,
+        paper_account_id: str | None = None,
+        status: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[PaperSessionModel, ...]:
         with Session(self.engine) as session:
             statement = select(PaperSessionModel).order_by(PaperSessionModel.created_at)
             if paper_account_id is not None:
                 statement = statement.where(PaperSessionModel.paper_account_id == paper_account_id)
+            if status is not None:
+                statement = statement.where(PaperSessionModel.status == status)
+            statement = statement.limit(limit).offset(offset)
             values = tuple(session.scalars(statement))
             for value in values:
                 session.expunge(value)
@@ -405,15 +414,27 @@ class PaperRepository:
             session.expunge(model)
             return model
 
-    def list_orders(self, paper_session_id: str) -> tuple[PaperOrderModel, ...]:
+    def list_orders(
+        self,
+        paper_session_id: str,
+        *,
+        status: str | None = None,
+        instrument_id: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[PaperOrderModel, ...]:
         with Session(self.engine) as session:
-            values = tuple(
-                session.scalars(
-                    select(PaperOrderModel)
-                    .where(PaperOrderModel.paper_session_id == paper_session_id)
-                    .order_by(PaperOrderModel.created_at)
-                )
+            statement = (
+                select(PaperOrderModel)
+                .where(PaperOrderModel.paper_session_id == paper_session_id)
+                .order_by(PaperOrderModel.created_at, PaperOrderModel.id)
             )
+            if status is not None:
+                statement = statement.where(PaperOrderModel.status == status)
+            if instrument_id is not None:
+                statement = statement.where(PaperOrderModel.instrument_id == instrument_id)
+            statement = statement.limit(limit).offset(offset)
+            values = tuple(session.scalars(statement))
             for value in values:
                 session.expunge(value)
             return values
@@ -477,15 +498,27 @@ class PaperRepository:
             session.expunge(model)
             return model
 
-    def list_fills(self, paper_session_id: str) -> tuple[PaperFillModel, ...]:
+    def list_fills(
+        self,
+        paper_session_id: str,
+        *,
+        instrument_id: str | None = None,
+        trade_date: date | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[PaperFillModel, ...]:
         with Session(self.engine) as session:
-            values = tuple(
-                session.scalars(
-                    select(PaperFillModel)
-                    .where(PaperFillModel.paper_session_id == paper_session_id)
-                    .order_by(PaperFillModel.created_at)
-                )
+            statement = (
+                select(PaperFillModel)
+                .where(PaperFillModel.paper_session_id == paper_session_id)
+                .order_by(PaperFillModel.created_at, PaperFillModel.id)
             )
+            if instrument_id is not None:
+                statement = statement.where(PaperFillModel.instrument_id == instrument_id)
+            if trade_date is not None:
+                statement = statement.where(PaperFillModel.trade_date == trade_date)
+            statement = statement.limit(limit).offset(offset)
+            values = tuple(session.scalars(statement))
             for value in values:
                 session.expunge(value)
             return values
@@ -622,15 +655,27 @@ class PaperRepository:
             session.expunge(model)
             return model
 
-    def list_snapshots(self, paper_session_id: str) -> tuple[PaperAccountSnapshotModel, ...]:
+    def list_snapshots(
+        self,
+        paper_session_id: str,
+        *,
+        start: date | None = None,
+        end: date | None = None,
+        limit: int = 5000,
+        offset: int = 0,
+    ) -> tuple[PaperAccountSnapshotModel, ...]:
         with Session(self.engine) as session:
-            values = tuple(
-                session.scalars(
-                    select(PaperAccountSnapshotModel)
-                    .where(PaperAccountSnapshotModel.paper_session_id == paper_session_id)
-                    .order_by(PaperAccountSnapshotModel.session_date)
-                )
+            statement = (
+                select(PaperAccountSnapshotModel)
+                .where(PaperAccountSnapshotModel.paper_session_id == paper_session_id)
+                .order_by(PaperAccountSnapshotModel.session_date)
             )
+            if start is not None:
+                statement = statement.where(PaperAccountSnapshotModel.session_date >= start)
+            if end is not None:
+                statement = statement.where(PaperAccountSnapshotModel.session_date <= end)
+            statement = statement.limit(limit).offset(offset)
+            values = tuple(session.scalars(statement))
             for value in values:
                 session.expunge(value)
             return values
@@ -813,3 +858,72 @@ class PaperRepository:
             if model is not None:
                 session.expunge(model)
             return model
+
+    # --- API queries ---
+    def list_positions(
+        self,
+        paper_account_id: str,
+        *,
+        include_closed: bool = False,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[PaperPositionModel, ...]:
+        with Session(self.engine) as session:
+            statement = select(PaperPositionModel).where(
+                PaperPositionModel.paper_account_id == paper_account_id
+            )
+            if not include_closed:
+                statement = statement.where(PaperPositionModel.total_quantity > 0)
+            statement = statement.order_by(PaperPositionModel.instrument_id).limit(limit).offset(
+                offset
+            )
+            values = tuple(session.scalars(statement))
+            for value in values:
+                session.expunge(value)
+            return values
+
+    def list_audit(
+        self,
+        paper_session_id: str,
+        *,
+        event_type: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[PaperAuditEventModel, ...]:
+        with Session(self.engine) as session:
+            statement = select(PaperAuditEventModel).where(
+                PaperAuditEventModel.paper_session_id == paper_session_id
+            )
+            if event_type is not None:
+                statement = statement.where(PaperAuditEventModel.event_type == event_type)
+            statement = statement.order_by(
+                PaperAuditEventModel.created_at, PaperAuditEventModel.id
+            ).limit(limit).offset(offset)
+            values = tuple(session.scalars(statement))
+            for value in values:
+                session.expunge(value)
+            return values
+
+    def list_risk_decisions(
+        self,
+        paper_session_id: str,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[PaperRiskDecisionModel, ...]:
+        with Session(self.engine) as session:
+            statement = (
+                select(PaperRiskDecisionModel)
+                .join(
+                    PaperOrderIntentModel,
+                    PaperOrderIntentModel.id == PaperRiskDecisionModel.order_intent_id,
+                )
+                .where(PaperOrderIntentModel.paper_session_id == paper_session_id)
+                .order_by(PaperRiskDecisionModel.evaluated_at, PaperRiskDecisionModel.id)
+                .limit(limit)
+                .offset(offset)
+            )
+            values = tuple(session.scalars(statement))
+            for value in values:
+                session.expunge(value)
+            return values
