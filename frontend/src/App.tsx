@@ -4,6 +4,7 @@ import { SystemStatusPage } from "./pages/SystemStatusPage";
 import { DatasetsPage } from "./pages/DatasetsPage";
 import { MarketDataPage } from "./pages/MarketDataPage";
 import { BacktestsPage } from "./pages/BacktestsPage";
+import { PaperPage } from "./pages/PaperPage";
 import { ResearchPage } from "./pages/ResearchPage";
 
 export default function App() {
@@ -13,5 +14,6 @@ export default function App() {
   if (window.location.pathname === "/market-data") return <MarketDataPage />;
   if (window.location.pathname === "/backtests") return <BacktestsPage />;
   if (window.location.pathname === "/research") return <ResearchPage />;
+  if (window.location.pathname === "/paper") return <PaperPage />;
   return <NotFoundPage />;
 }
