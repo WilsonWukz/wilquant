@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 import sqlalchemy as sa
+from alembic.config import Config
 from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
+
+from alembic import command
+from quant_lab.core.config import Settings
+from quant_lab.db.sqlite import create_sqlite_engine
 
 PAPER_TABLES = {
     "paper_accounts",
@@ -100,3 +107,63 @@ def test_risk_policy_version_immutable(engine):
         session.execute(
             text("DELETE FROM paper_risk_policy_versions WHERE id = 'rpv1'")
         )
+
+
+REVISION_0012 = "20260722_0012"
+REVISION_0013 = "20260722_0013"
+SESSION_0013_COLUMNS = {
+    "replay_start_date",
+    "replay_end_date",
+    "execution_config_json",
+    "execution_config_fingerprint",
+}
+ADVANCE_0013_COLUMNS = {"error_code"}
+
+
+def _column_names(engine, table_name: str) -> set[str]:
+    return {column["name"] for column in inspect(engine).get_columns(table_name)}
+
+
+def test_0013_columns_exist(engine):
+    assert _column_names(engine, "paper_sessions") >= SESSION_0013_COLUMNS
+    assert _column_names(engine, "paper_session_advances") >= ADVANCE_0013_COLUMNS
+
+
+def test_empty_database_upgrades_to_0013_head(tmp_path: Path, monkeypatch) -> None:
+    settings = Settings(project_root=tmp_path, runtime_root=tmp_path / "runtime")
+    monkeypatch.setenv("QUANT_LAB_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("QUANT_LAB_RUNTIME_ROOT", str(settings.runtime_root))
+    command.upgrade(Config("backend/alembic.ini"), "head")
+    engine = create_sqlite_engine(settings)
+    with engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT version_num FROM alembic_version")
+        ).scalar_one() == REVISION_0013
+    assert _column_names(engine, "paper_sessions") >= SESSION_0013_COLUMNS
+    engine.dispose()
+
+
+def test_0013_downgrades_to_0012_and_upgrades_again(
+    tmp_path: Path, monkeypatch
+) -> None:
+    settings = Settings(project_root=tmp_path, runtime_root=tmp_path / "runtime")
+    monkeypatch.setenv("QUANT_LAB_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("QUANT_LAB_RUNTIME_ROOT", str(settings.runtime_root))
+    config = Config("backend/alembic.ini")
+    command.upgrade(config, "head")
+    engine = create_sqlite_engine(settings)
+    command.downgrade(config, REVISION_0012)
+    with engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT version_num FROM alembic_version")
+        ).scalar_one() == REVISION_0012
+    assert SESSION_0013_COLUMNS.isdisjoint(_column_names(engine, "paper_sessions"))
+    assert ADVANCE_0013_COLUMNS.isdisjoint(
+        _column_names(engine, "paper_session_advances")
+    )
+    command.upgrade(config, "head")
+    with engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT version_num FROM alembic_version")
+        ).scalar_one() == REVISION_0013
+    engine.dispose()
