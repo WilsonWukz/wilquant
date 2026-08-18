@@ -18,7 +18,7 @@ SRC_DIR = REPO_ROOT / "backend" / "src"
 ALEMBIC_INI = REPO_ROOT / "backend" / "alembic.ini"
 
 REVISION_0008 = "20260722_0008"
-REVISION_HEAD = "20260722_0012"
+REVISION_HEAD = "20260722_0013"
 
 
 def _alembic_config() -> Config:

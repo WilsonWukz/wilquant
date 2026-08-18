@@ -116,6 +116,10 @@ class PaperRepository:
         market_data_snapshot_json: str,
         market_data_snapshot_fingerprint: str,
         strategy_version_id: str | None = None,
+        replay_start_date: date | None = None,
+        replay_end_date: date | None = None,
+        execution_config_json: str | None = None,
+        execution_config_fingerprint: str | None = None,
     ) -> PaperSessionModel:
         self.get_account(paper_account_id)
         if strategy_version_id is not None:
@@ -127,6 +131,7 @@ class PaperRepository:
                 if exists is None:
                     raise PaperError("STRATEGY_VERSION_NOT_FOUND", "策略版本不存在")
         now = datetime.now(UTC)
+        replay_start = replay_start_date if replay_start_date is not None else date(1970, 1, 1)
         with Session(self.engine) as session:
             model = PaperSessionModel(
                 id=str(uuid4()),
@@ -137,6 +142,10 @@ class PaperRepository:
                 market_data_snapshot_fingerprint=market_data_snapshot_fingerprint,
                 strategy_version_id=strategy_version_id,
                 status=PaperSessionStatus.CREATED.value,
+                replay_start_date=replay_start,
+                replay_end_date=replay_end_date,
+                execution_config_json=execution_config_json or "{}",
+                execution_config_fingerprint=execution_config_fingerprint or "",
                 version=1,
                 created_at=now,
                 updated_at=now,
