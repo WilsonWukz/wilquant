@@ -8,6 +8,7 @@ import {
   createRiskPolicy,
   createSession,
   fetchAccounts,
+  fetchEquity,
   fetchRiskPolicy,
   patchRiskPolicy,
 } from "./paper";
@@ -112,6 +113,30 @@ describe("paper service", () => {
 
     await expect(fetchAccounts()).resolves.toEqual([{ id: "a1", name: "acct", status: "ACTIVE" }]);
     expect(fetchMock).toHaveBeenCalledWith("/api/v1/paper/accounts", undefined);
+  });
+
+  it("normalizes an empty equity response to an empty array", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ items: [] }), { status: 200 }),
+      ),
+    );
+
+    await expect(fetchEquity("s1")).resolves.toEqual([]);
+  });
+
+  it("rejects a malformed equity response instead of returning undefined", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ id: "s1", status: "RUNNING" }), { status: 200 }),
+      ),
+    );
+
+    await expect(fetchEquity("s1")).rejects.toMatchObject({
+      error_code: "INVALID_RESPONSE",
+    });
   });
 
   it("cancels an order with expected status", async () => {

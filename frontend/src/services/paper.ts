@@ -52,6 +52,16 @@ function query(params: Record<string, string | undefined>): string {
 
 type ListResponse<T> = { items: T[] };
 
+function parseListItems<T>(response: ListResponse<T>, resource: string): T[] {
+  if (!response || !Array.isArray(response.items)) {
+    throw {
+      error_code: "INVALID_RESPONSE",
+      message: resource + " 响应格式无效",
+    } satisfies ApiError;
+  }
+  return response.items;
+}
+
 // --- accounts ---
 
 export function createAccount(payload: { name: string; initial_cash: string; base_currency: string }): Promise<PaperAccount> {
@@ -164,7 +174,9 @@ export function fetchPositions(sessionId: string, includeClosed = false): Promis
 // --- equity ---
 
 export function fetchEquity(sessionId: string, params: { start?: string; end?: string } = {}): Promise<PaperEquityPoint[]> {
-  return request<ListResponse<PaperEquityPoint>>("/paper/sessions/" + sessionId + "/equity" + query(params)).then((r) => r.items);
+  return request<ListResponse<PaperEquityPoint>>("/paper/sessions/" + sessionId + "/equity" + query(params)).then((response) =>
+    parseListItems(response, "权益曲线"),
+  );
 }
 
 // --- audit ---

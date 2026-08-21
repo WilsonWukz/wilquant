@@ -252,7 +252,13 @@ export function PaperPage() {
             ))}
           </nav>
           {tab === "overview" && session && (
-            <OverviewTab session={session} account={account} policy={policy} refreshKey={refreshKey} />
+            <OverviewTab
+              session={session}
+              account={account}
+              policy={policy}
+              refreshKey={refreshKey}
+              onNotice={setNotice}
+            />
           )}
           {tab === "positions" && session && <PositionsTab session={session} refreshKey={refreshKey} />}
           {tab === "orders" && session && (
@@ -844,16 +850,23 @@ function OverviewTab({
   account,
   policy,
   refreshKey,
+  onNotice,
 }: {
   session: PaperSession;
   account: PaperAccount | null;
   policy: PaperRiskPolicy | null;
   refreshKey: number;
+  onNotice: (message: string) => void;
 }) {
   const [equity, setEquity] = useState<PaperEquityPoint[]>([]);
   useEffect(() => {
-    fetchEquity(session.id).then(setEquity).catch(() => setEquity([]));
-  }, [session.id, refreshKey]);
+    fetchEquity(session.id)
+      .then(setEquity)
+      .catch((error) => {
+        setEquity([]);
+        onNotice(apiMessage(error));
+      });
+  }, [session.id, refreshKey, onNotice]);
 
   return (
     <section>

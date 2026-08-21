@@ -3,7 +3,9 @@ import { afterEach, expect, test, vi } from "vitest";
 import type { PaperSession } from "../types/paper";
 import { PaperPage } from "./PaperPage";
 
-afterEach(() => vi.unstubAllGlobals());
+const fetchRoutes = new Map<string, unknown>();
+
+afterEach(() => fetchRoutes.clear());
 
 const account = {
   id: "a1",
@@ -42,14 +44,25 @@ const runningSession: PaperSession = {
 };
 
 function stubFetch(routes: Record<string, unknown>) {
-  const fetchMock = vi.fn((input: RequestInfo | URL) => {
-    const url = String(input);
-    for (const [key, value] of Object.entries(routes)) {
-      if (url.includes(key)) {
-        return Promise.resolve(new Response(JSON.stringify(value), { status: 200 }));
-      }
+  for (const [route, response] of Object.entries(routes)) {
+    fetchRoutes.set(route, response);
+  }
+  const fetchMock = vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    const request = input instanceof Request ? input : null;
+    const url = new URL(request?.url ?? String(input), "http://test.local");
+    const method = (init?.method ?? request?.method ?? "GET").toUpperCase();
+    const key = method + " " + url.pathname + url.search;
+    if (!fetchRoutes.has(key)) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({ error_code: "UNSTUBBED_TEST_ROUTE", message: key }),
+          { status: 404 },
+        ),
+      );
     }
-    return Promise.resolve(new Response(JSON.stringify({ items: [] }), { status: 200 }));
+    return Promise.resolve(
+      new Response(JSON.stringify(fetchRoutes.get(key)), { status: 200 }),
+    );
   });
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
@@ -57,17 +70,25 @@ function stubFetch(routes: Record<string, unknown>) {
 
 function stubAccountAndSession(session = runningSession) {
   return stubFetch({
-    "/paper/accounts/a1/risk": { policy_id: "p1", version: 1, fingerprint: "p".repeat(64), name: "p", status: "ACTIVE", version_id: "v1", max_single_order_notional: "1000000", max_single_position_weight: "0.5", max_total_exposure: "1", cash_buffer_ratio: "0.1", max_daily_loss: "0.05", max_drawdown: "0.2", max_open_orders: 10, allowed_security_types: ["EQUITY"] },
-    "/paper/accounts/a1": account,
-    "/paper/accounts?": { items: [account] },
-    "/paper/accounts": { items: [account] },
-    "/paper/sessions?account_id=a1": { items: [session] },
-    "/paper/sessions/s1": session,
+    "GET /api/v1/paper/accounts": { items: [account] },
+    "GET /api/v1/paper/accounts/a1": account,
+    "GET /api/v1/paper/accounts/a1/risk": { policy_id: "p1", version: 1, fingerprint: "p".repeat(64), name: "p", status: "ACTIVE", version_id: "v1", max_single_order_notional: "1000000", max_single_position_weight: "0.5", max_total_exposure: "1", cash_buffer_ratio: "0.1", max_daily_loss: "0.05", max_drawdown: "0.2", max_open_orders: 10, allowed_security_types: ["EQUITY"] },
+    "GET /api/v1/paper/sessions?account_id=a1": { items: [session] },
+    "GET /api/v1/paper/sessions/s1": session,
+    "GET /api/v1/paper/sessions/s1/equity": { items: [] },
+    "GET /api/v1/paper/sessions/s1/positions": { items: [] },
+    "GET /api/v1/paper/sessions/s1/orders": { items: [] },
+    "GET /api/v1/paper/sessions/s1/fills": { items: [] },
+    "GET /api/v1/paper/sessions/s1/risk-decisions": { items: [] },
+    "GET /api/v1/paper/sessions/s1/audit": { items: [] },
+    "GET /api/v1/market-data/profiles": { items: [] },
+    "GET /api/v1/strategies": { items: [] },
+    "GET /api/v1/market-data/profiles/p/instruments": { items: [] },
   });
 }
 
 test("shows the PAPER simulation warning", async () => {
-  stubFetch({ "/paper/accounts": { items: [] } });
+  stubFetch({ "GET /api/v1/paper/accounts": { items: [] } });
   render(<PaperPage />);
   expect(await screen.findByRole("heading", { name: "PAPER · 模拟交易工作台", level: 1 })).toBeInTheDocument();
   expect(screen.getByText("所有资金、订单和成交均为本地模拟，不会发送到真实券商。")).toBeInTheDocument();
@@ -75,9 +96,30 @@ test("shows the PAPER simulation warning", async () => {
 });
 
 test("shows onboarding when there are no accounts", async () => {
-  stubFetch({ "/paper/accounts": { items: [] } });
+  stubFetch({ "GET /api/v1/paper/accounts": { items: [] } });
   render(<PaperPage />);
-  expect(await screen.findByText("暂无 PAPER 账户")).toBeInTheDocument();
+  expect(await screen.findByRole("heading", { name: "暂无 PAPER 账户" })).toBeInTheDocument();
+  expect(document.querySelectorAll("main.page-shell")).toHaveLength(1);
+});
+
+test("session detail route does not swallow the equity route", async () => {
+  stubFetch({
+    "GET /api/v1/paper/sessions/s1": runningSession,
+    "GET /api/v1/paper/sessions/s1/equity": { items: [] },
+  });
+
+  const response = await fetch("/api/v1/paper/sessions/s1/equity");
+
+  await expect(response.json()).resolves.toEqual({ items: [] });
+});
+
+test("fetch fixture overrides preserve default routes", async () => {
+  stubAccountAndSession();
+  stubFetch({ "GET /api/v1/paper/sessions/s1/positions": { items: [] } });
+
+  const response = await fetch("/api/v1/paper/accounts");
+
+  await expect(response.json()).resolves.toEqual({ items: [account] });
 });
 
 test("renders the account summary", async () => {
@@ -92,7 +134,7 @@ test("renders the session selector", async () => {
   stubAccountAndSession();
   render(<PaperPage />);
   expect(await screen.findByText("选择 Session")).toBeInTheDocument();
-  expect(screen.getByText(/sess · RUNNING/)).toBeInTheDocument();
+  expect(await screen.findByRole("option", { name: /sess · RUNNING/ })).toBeInTheDocument();
 });
 
 test("CREATED session only enables START", async () => {
@@ -102,6 +144,8 @@ test("CREATED session only enables START", async () => {
   expect(start).toBeEnabled();
   expect(screen.getByRole("button", { name: "ADVANCE" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "PAUSE" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "RESUME" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "STOP" })).toBeDisabled();
 });
 
 test("RUNNING session enables PAUSE/ADVANCE/STOP", async () => {
@@ -112,6 +156,21 @@ test("RUNNING session enables PAUSE/ADVANCE/STOP", async () => {
   expect(screen.getByRole("button", { name: "ADVANCE" })).toBeEnabled();
   expect(screen.getByRole("button", { name: "STOP" })).toBeEnabled();
   expect(screen.getByRole("button", { name: "START" })).toBeDisabled();
+});
+
+test("empty equity renders the empty state", async () => {
+  stubAccountAndSession();
+  render(<PaperPage />);
+
+  expect(await screen.findByText("暂无权益曲线")).toBeInTheDocument();
+});
+
+test("malformed equity response enters the page error state", async () => {
+  stubAccountAndSession();
+  stubFetch({ "GET /api/v1/paper/sessions/s1/equity": runningSession });
+  render(<PaperPage />);
+
+  expect(await screen.findByRole("alert")).toHaveTextContent("INVALID_RESPONSE");
 });
 
 test("PAUSED session enables RESUME/STOP", async () => {
@@ -135,12 +194,7 @@ test("manual intent is not immediate execution", async () => {
 test("positions render with PnL signs", async () => {
   stubAccountAndSession();
   stubFetch({
-    "/paper/accounts/a1/risk": { policy_id: "p1", version: 1, fingerprint: "p".repeat(64), name: "p", status: "ACTIVE", version_id: "v1", max_single_order_notional: "1000000", max_single_position_weight: "0.5", max_total_exposure: "1", cash_buffer_ratio: "0.1", max_daily_loss: "0.05", max_drawdown: "0.2", max_open_orders: 10, allowed_security_types: ["EQUITY"] },
-    "/paper/accounts/a1": account,
-    "/paper/accounts": { items: [account] },
-    "/paper/sessions?account_id=a1": { items: [runningSession] },
-    "/paper/sessions/s1": runningSession,
-    "/positions": {
+    "GET /api/v1/paper/sessions/s1/positions": {
       items: [
         { instrument_id: "600000.XSHG", security_type: "EQUITY", symbol: "600000", total_quantity: 100, sellable_quantity: 0, average_cost: "10.2", market_value: "1040", unrealized_pnl: "20", realized_pnl: "0", updated_at: "2026-01-01" },
       ],
@@ -156,12 +210,7 @@ test("positions render with PnL signs", async () => {
 test("orders render risk rejection", async () => {
   stubAccountAndSession();
   stubFetch({
-    "/paper/accounts/a1/risk": { policy_id: "p1", version: 1, fingerprint: "p".repeat(64), name: "p", status: "ACTIVE", version_id: "v1", max_single_order_notional: "1000000", max_single_position_weight: "0.5", max_total_exposure: "1", cash_buffer_ratio: "0.1", max_daily_loss: "0.05", max_drawdown: "0.2", max_open_orders: 10, allowed_security_types: ["EQUITY"] },
-    "/paper/accounts/a1": account,
-    "/paper/accounts": { items: [account] },
-    "/paper/sessions?account_id=a1": { items: [runningSession] },
-    "/paper/sessions/s1": runningSession,
-    "/orders": {
+    "GET /api/v1/paper/sessions/s1/orders": {
       items: [
         { id: "o1", client_order_id: "co1", order_intent_id: "i1", risk_decision_id: "d1", instrument_id: "600000.XSHG", side: "BUY", requested_quantity: 100, accepted_quantity: 0, filled_quantity: 0, order_type: "MARKET_ON_OPEN_SIMULATED", limit_price: null, status: "RISK_REJECTED", submitted_session_date: null, execution_session_date: null, reject_reason: "ORDER_NOTIONAL_LIMIT", created_at: "2026-01-01", updated_at: "2026-01-01" },
       ],
@@ -177,12 +226,7 @@ test("orders render risk rejection", async () => {
 test("fills render fee detail columns", async () => {
   stubAccountAndSession();
   stubFetch({
-    "/paper/accounts/a1/risk": { policy_id: "p1", version: 1, fingerprint: "p".repeat(64), name: "p", status: "ACTIVE", version_id: "v1", max_single_order_notional: "1000000", max_single_position_weight: "0.5", max_total_exposure: "1", cash_buffer_ratio: "0.1", max_daily_loss: "0.05", max_drawdown: "0.2", max_open_orders: 10, allowed_security_types: ["EQUITY"] },
-    "/paper/accounts/a1": account,
-    "/paper/accounts": { items: [account] },
-    "/paper/sessions?account_id=a1": { items: [runningSession] },
-    "/paper/sessions/s1": runningSession,
-    "/fills": {
+    "GET /api/v1/paper/sessions/s1/fills": {
       items: [
         { id: "f1", paper_order_id: "o1", instrument_id: "600000.XSHG", side: "BUY", quantity: 100, raw_price: "10.2", slippage: "0", fill_price: "10.2", commission: "5", stamp_tax: "0", transfer_fee: "0.01", total_fee: "5.01", trade_date: "2026-01-05", created_at: "2026-01-01" },
       ],
@@ -203,12 +247,10 @@ test("freeze and unfreeze follow account status", async () => {
 });
 
 test("frozen account shows unfreeze", async () => {
+  stubAccountAndSession();
   stubFetch({
-    "/paper/accounts/a1/risk": { policy_id: "p1", version: 1, fingerprint: "p".repeat(64), name: "p", status: "ACTIVE", version_id: "v1", max_single_order_notional: "1000000", max_single_position_weight: "0.5", max_total_exposure: "1", cash_buffer_ratio: "0.1", max_daily_loss: "0.05", max_drawdown: "0.2", max_open_orders: 10, allowed_security_types: ["EQUITY"] },
-    "/paper/accounts/a1": { ...account, status: "FROZEN" },
-    "/paper/accounts": { items: [{ ...account, status: "FROZEN" }] },
-    "/paper/sessions?account_id=a1": { items: [runningSession] },
-    "/paper/sessions/s1": runningSession,
+    "GET /api/v1/paper/accounts": { items: [{ ...account, status: "FROZEN" }] },
+    "GET /api/v1/paper/accounts/a1": { ...account, status: "FROZEN" },
   });
   render(<PaperPage />);
   expect(await screen.findByRole("button", { name: "解除冻结" })).toBeInTheDocument();
@@ -217,12 +259,7 @@ test("frozen account shows unfreeze", async () => {
 test("risk decisions render reason labels", async () => {
   stubAccountAndSession();
   stubFetch({
-    "/paper/accounts/a1/risk": { policy_id: "p1", version: 1, fingerprint: "p".repeat(64), name: "p", status: "ACTIVE", version_id: "v1", max_single_order_notional: "1000000", max_single_position_weight: "0.5", max_total_exposure: "1", cash_buffer_ratio: "0.1", max_daily_loss: "0.05", max_drawdown: "0.2", max_open_orders: 10, allowed_security_types: ["EQUITY"] },
-    "/paper/accounts/a1": account,
-    "/paper/accounts": { items: [account] },
-    "/paper/sessions?account_id=a1": { items: [runningSession] },
-    "/paper/sessions/s1": runningSession,
-    "/risk-decisions": {
+    "GET /api/v1/paper/sessions/s1/risk-decisions": {
       items: [
         { id: "d1", order_intent_id: "i1", decision: "REJECT", reason_codes: ["ORDER_NOTIONAL_LIMIT"], risk_policy_version: 1, risk_policy_fingerprint: "p".repeat(64), evaluated_metrics: { estimated_order_notional: "2000" }, evaluated_at: "2026-01-01T00:00:00Z" },
       ],
@@ -237,12 +274,7 @@ test("risk decisions render reason labels", async () => {
 test("audit renders payload safely", async () => {
   stubAccountAndSession();
   stubFetch({
-    "/paper/accounts/a1/risk": { policy_id: "p1", version: 1, fingerprint: "p".repeat(64), name: "p", status: "ACTIVE", version_id: "v1", max_single_order_notional: "1000000", max_single_position_weight: "0.5", max_total_exposure: "1", cash_buffer_ratio: "0.1", max_daily_loss: "0.05", max_drawdown: "0.2", max_open_orders: 10, allowed_security_types: ["EQUITY"] },
-    "/paper/accounts/a1": account,
-    "/paper/accounts": { items: [account] },
-    "/paper/sessions?account_id=a1": { items: [runningSession] },
-    "/paper/sessions/s1": runningSession,
-    "/audit": { items: [{ id: "ev1", event_type: "SESSION_ADVANCED", payload: { resulting_session_date: "2026-01-02" }, created_at: "2026-01-01T00:00:00Z" }] },
+    "GET /api/v1/paper/sessions/s1/audit": { items: [{ id: "ev1", event_type: "SESSION_ADVANCED", payload: { resulting_session_date: "2026-01-02" }, created_at: "2026-01-01T00:00:00Z" }] },
   });
   render(<PaperPage />);
   const auditTab = await screen.findByRole("button", { name: "审计" });
