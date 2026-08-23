@@ -119,8 +119,24 @@ BARS_CSV = (
     b"600000,XSHG,2026-01-05,10.2,10.7,10.0,10.4,100000,1040000\n"
     b"600000,XSHG,2026-01-06,10.4,10.9,10.2,10.6,100000,1060000\n"
     b"600000,XSHG,2026-01-07,10.6,11.1,10.4,10.8,100000,1080000\n"
+    b"600000,XSHG,2026-01-08,10.8,11.3,10.6,11.0,100000,1100000\n"
+    b"600000,XSHG,2026-01-09,11.0,11.5,10.8,11.2,100000,1120000\n"
+    b"600000,XSHG,2026-01-12,11.2,11.7,11.0,11.4,100000,1140000\n"
+    b"600000,XSHG,2026-01-13,11.4,11.9,11.2,11.6,100000,1160000\n"
     b"000001,XSHE,2026-01-02,20.0,20.5,19.8,20.2,100000,2020000\n"
     b"000001,XSHE,2026-01-05,20.2,20.7,20.0,20.4,100000,2040000\n"
+    b"000001,XSHE,2026-01-08,20.8,21.3,20.6,21.0,100000,2100000\n"
+    b"000001,XSHE,2026-01-09,21.0,21.5,20.8,21.2,100000,2120000\n"
+    b"000001,XSHE,2026-01-12,21.2,21.7,21.0,21.4,100000,2140000\n"
+    b"000001,XSHE,2026-01-13,21.4,21.9,21.2,21.6,100000,2160000\n"
+    b"510300,XSHG,2026-01-02,4.0,4.1,3.9,4.0,50000,200000\n"
+    b"510300,XSHG,2026-01-05,4.0,4.2,3.9,4.1,50000,205000\n"
+    b"510300,XSHG,2026-01-06,4.1,4.3,4.0,4.2,50000,210000\n"
+    b"510300,XSHG,2026-01-07,4.2,4.4,4.1,4.3,50000,215000\n"
+    b"510300,XSHG,2026-01-08,4.3,4.5,4.2,4.4,50000,220000\n"
+    b"510300,XSHG,2026-01-09,4.4,4.6,4.3,4.5,50000,225000\n"
+    b"510300,XSHG,2026-01-12,4.5,4.7,4.4,4.6,50000,230000\n"
+    b"510300,XSHG,2026-01-13,4.6,4.8,4.5,4.7,50000,235000\n"
 )
 
 BARS_MAPPING = {
@@ -128,7 +144,16 @@ BARS_MAPPING = {
     for name in ("symbol", "exchange", "trade_date", "open", "high", "low", "close", "volume", "amount")
 }
 
-OPEN_DATES = [date(2026, 1, 2), date(2026, 1, 5), date(2026, 1, 6), date(2026, 1, 7)]
+OPEN_DATES = [
+    date(2026, 1, 2),
+    date(2026, 1, 5),
+    date(2026, 1, 6),
+    date(2026, 1, 7),
+    date(2026, 1, 8),
+    date(2026, 1, 9),
+    date(2026, 1, 12),
+    date(2026, 1, 13),
+]
 
 
 def _calendar_sessions() -> list[dict[str, object]]:
@@ -224,6 +249,8 @@ def seed_paper_environment(engine, settings) -> SimpleNamespace:
                 "('600000.XSHG','600000','XSHG','Test','EQUITY','CNY',100,0.01,0,0,"
                 "'local',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),"
                 "('000001.XSHE','000001','XSHE','Test2','EQUITY','CNY',100,0.01,0,0,"
+                "'local',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP),"
+                "('510300.XSHG','510300','XSHG','Test3','ETF','CNY',100,0.001,0,1,"
                 "'local',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP)"
             )
         )
@@ -276,9 +303,7 @@ def paper_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.fixture
-async def paper_client(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> AsyncIterator[AsyncClient]:
+def paper_runtime_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Settings:
     settings = Settings(project_root=tmp_path, runtime_root=tmp_path / "runtime")
     monkeypatch.setenv("QUANT_LAB_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setenv("QUANT_LAB_RUNTIME_ROOT", str(settings.runtime_root))
@@ -286,6 +311,12 @@ async def paper_client(
     seed_engine = create_sqlite_engine(settings)
     seed_paper_environment(seed_engine, settings)
     seed_engine.dispose()
+    return settings
+
+
+@pytest.fixture
+async def paper_client(paper_runtime_settings: Settings) -> AsyncIterator[AsyncClient]:
+    settings = paper_runtime_settings
     app = create_app(settings)
     transport = ASGITransport(app=app)
     async with (

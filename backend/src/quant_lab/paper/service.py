@@ -1356,22 +1356,6 @@ class PaperSessionService:
         metadata: dict[str, object],
     ) -> PaperOrderIntentModel:
         session_model = self.repository.get_session(paper_session_id)
-        if session_model.status != PaperSessionStatus.RUNNING.value:
-            raise PaperError("SESSION_NOT_RUNNING", "会话不在运行中")
-        signal_session_date = session_model.current_session_date
-        if signal_session_date is None:
-            raise PaperError("SESSION_NOT_STARTED", "会话尚未推进到任何交易日")
-        snapshot = cast(dict[str, object], json.loads(session_model.market_data_snapshot_json))
-        open_dates = sorted(
-            item.session_date
-            for item in self.calendars.list_sessions(
-                str(snapshot["calendar_version_id"]), open_only=True, limit=5000
-            )
-        )
-        intended = next((d for d in open_dates if d > signal_session_date), None)
-        if intended is None:
-            raise PaperError("NO_FUTURE_SESSION", "没有可执行的后续交易日")
-
         with Session(self.engine) as session:
             existing = session.scalar(
                 select(PaperOrderIntentModel).where(
@@ -1386,6 +1370,29 @@ class PaperSessionService:
                     session.expunge(existing)
                     return existing
                 raise PaperError("IDEMPOTENCY_KEY_CONFLICT", "相同幂等键但请求内容不一致")
+
+        if session_model.status != PaperSessionStatus.RUNNING.value:
+            raise PaperError("SESSION_NOT_RUNNING", "会话不在运行中")
+        signal_session_date = session_model.current_session_date
+        if signal_session_date is None:
+            raise PaperError("SESSION_NOT_STARTED", "会话尚未推进到任何交易日")
+        snapshot = cast(dict[str, object], json.loads(session_model.market_data_snapshot_json))
+        open_dates = sorted(
+            item.session_date
+            for item in self.calendars.list_sessions(
+                str(snapshot["calendar_version_id"]), open_only=True, limit=5000
+            )
+        )
+        future_open_dates = [
+            d
+            for d in open_dates
+            if d > signal_session_date
+            and (session_model.replay_end_date is None or d <= session_model.replay_end_date)
+        ]
+        # Manual intent 在下一次 ADVANCE 的收盘阶段完成风控, 必须留出再下一交易日执行.
+        intended = future_open_dates[1] if len(future_open_dates) >= 2 else None
+        if intended is None:
+            raise PaperError("NO_FUTURE_SESSION", "没有可执行的后续交易日")
 
         return self.repository.create_intent(
             paper_session_id=paper_session_id,

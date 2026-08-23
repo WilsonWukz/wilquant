@@ -291,7 +291,7 @@ async def test_create_manual_intent(paper_client):
     payload = r.json()
     assert payload["source_type"] == "MANUAL"
     assert payload["signal_session_date"] == "2026-01-02"
-    assert payload["intended_execution_session"] == "2026-01-05"
+    assert payload["intended_execution_session"] == "2026-01-06"
     assert payload["risk_status"] == "PENDING"
 
 
@@ -322,6 +322,61 @@ async def test_manual_intent_duplicate_idempotent(paper_client):
     )
     assert first.status_code == second.status_code == 201
     assert first.json()["id"] == second.json()["id"]
+
+
+async def test_manual_intent_delayed_retry_replays_before_future_date_validation(paper_client):
+    account = await _create_account(paper_client)
+    await _create_policy(paper_client, account["id"])
+    session = await _create_session(
+        paper_client, account["id"], replay_end_date="2026-01-06"
+    )
+    await _start_session(paper_client, session["id"], 1)
+    await paper_client.post(
+        f"/api/v1/paper/sessions/{session['id']}/advance",
+        json={
+            "idempotency_key": "delayed-a1",
+            "expected_version": 2,
+            "expected_current_session_date": None,
+        },
+    )
+    payload = {
+        "idempotency_key": "delayed-i1",
+        "instrument_id": "600000.XSHG",
+        "side": "BUY",
+        "quantity": 100,
+        "order_type": "MARKET_ON_OPEN_SIMULATED",
+        "limit_price": None,
+        "reason": None,
+        "metadata": {},
+    }
+    first = await paper_client.post(
+        f"/api/v1/paper/sessions/{session['id']}/order-intents", json=payload
+    )
+    assert first.status_code == 201
+    await paper_client.post(
+        f"/api/v1/paper/sessions/{session['id']}/advance",
+        json={
+            "idempotency_key": "delayed-a2",
+            "expected_version": 3,
+            "expected_current_session_date": "2026-01-02",
+        },
+    )
+
+    delayed_retry = await paper_client.post(
+        f"/api/v1/paper/sessions/{session['id']}/order-intents", json=payload
+    )
+    assert delayed_retry.status_code == 201
+    assert delayed_retry.json()["id"] == first.json()["id"]
+    paused = await paper_client.post(
+        f"/api/v1/paper/sessions/{session['id']}/pause",
+        json={"expected_version": 4},
+    )
+    assert paused.status_code == 200
+    paused_retry = await paper_client.post(
+        f"/api/v1/paper/sessions/{session['id']}/order-intents", json=payload
+    )
+    assert paused_retry.status_code == 201
+    assert paused_retry.json()["id"] == first.json()["id"]
 
 
 async def test_manual_intent_payload_conflict_409(paper_client):
@@ -369,6 +424,38 @@ async def test_manual_intent_before_advance_rejected(paper_client):
     )
     assert r.status_code == 409
     assert r.json()["error_code"] == "SESSION_NOT_STARTED"
+
+
+async def test_manual_intent_requires_execution_session_within_replay_end(paper_client):
+    account = await _create_account(paper_client)
+    await _create_policy(paper_client, account["id"])
+    session = await _create_session(
+        paper_client, account["id"], replay_end_date="2026-01-05"
+    )
+    await _start_session(paper_client, session["id"], 1)
+    await paper_client.post(
+        f"/api/v1/paper/sessions/{session['id']}/advance",
+        json={
+            "idempotency_key": "bounded-a1",
+            "expected_version": 2,
+            "expected_current_session_date": None,
+        },
+    )
+    response = await paper_client.post(
+        f"/api/v1/paper/sessions/{session['id']}/order-intents",
+        json={
+            "idempotency_key": "bounded-i1",
+            "instrument_id": "600000.XSHG",
+            "side": "BUY",
+            "quantity": 100,
+            "order_type": "MARKET_ON_OPEN_SIMULATED",
+            "limit_price": None,
+            "reason": None,
+            "metadata": {},
+        },
+    )
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "NO_FUTURE_SESSION"
 
 
 # --- orders / fills / positions / equity ---
@@ -429,6 +516,78 @@ async def test_cancel_submitted_order(paper_client):
     )
     assert r.status_code == 200
     assert r.json()["status"] == "CANCELLED"
+    audit = await paper_client.get(f"/api/v1/paper/sessions/{session['id']}/audit")
+    assert "ORDER_CANCELLED" in {item["event_type"] for item in audit.json()["items"]}
+
+
+async def test_manual_intent_created_after_close_fills_on_a_future_session(paper_client):
+    account = await _create_account(paper_client)
+    await _create_policy(paper_client, account["id"])
+    session = await _create_session(paper_client, account["id"])
+    await _start_session(paper_client, session["id"], 1)
+
+    first = await paper_client.post(
+        f"/api/v1/paper/sessions/{session['id']}/advance",
+        json={
+            "idempotency_key": "manual-fill-a1",
+            "expected_version": 2,
+            "expected_current_session_date": None,
+        },
+    )
+    assert first.status_code == 200
+    created = await paper_client.post(
+        f"/api/v1/paper/sessions/{session['id']}/order-intents",
+        json={
+            "idempotency_key": "manual-fill-i1",
+            "instrument_id": "600000.XSHG",
+            "side": "BUY",
+            "quantity": 100,
+            "order_type": "MARKET_ON_OPEN_SIMULATED",
+            "limit_price": None,
+            "reason": "phase-5g-regression",
+            "metadata": {},
+        },
+    )
+    assert created.status_code == 201
+    assert (await paper_client.get(f"/api/v1/paper/sessions/{session['id']}/fills")).json()[
+        "items"
+    ] == []
+
+    risk_and_order = await paper_client.post(
+        f"/api/v1/paper/sessions/{session['id']}/advance",
+        json={
+            "idempotency_key": "manual-fill-a2",
+            "expected_version": 3,
+            "expected_current_session_date": "2026-01-02",
+        },
+    )
+    assert risk_and_order.status_code == 200
+    execution = await paper_client.post(
+        f"/api/v1/paper/sessions/{session['id']}/advance",
+        json={
+            "idempotency_key": "manual-fill-a3",
+            "expected_version": 4,
+            "expected_current_session_date": "2026-01-05",
+        },
+    )
+    assert execution.status_code == 200
+
+    fills = await paper_client.get(f"/api/v1/paper/sessions/{session['id']}/fills")
+    orders = await paper_client.get(f"/api/v1/paper/sessions/{session['id']}/orders")
+    assert len(fills.json()["items"]) == 1
+    filled_order = orders.json()["items"][0]
+    assert filled_order["status"] == "FILLED"
+    cancel = await paper_client.post(
+        f"/api/v1/paper/orders/{filled_order['id']}/cancel",
+        json={"expected_status": "FILLED"},
+    )
+    assert cancel.status_code == 409
+    assert cancel.json()["error_code"] == "ORDER_STATE_CONFLICT"
+    assert len(
+        (
+            await paper_client.get(f"/api/v1/paper/sessions/{session['id']}/fills")
+        ).json()["items"]
+    ) == 1
 
 
 async def test_equity_sorted_and_filtered(paper_client):
@@ -562,46 +721,72 @@ async def test_paper_routes_are_public_in_openapi():
 # --- runtime smoke ---
 
 
-async def test_runtime_smoke_full_flow_and_restart(paper_client, tmp_path, monkeypatch):
-    from pathlib import Path
-
-    from quant_lab.core.config import Settings
+async def test_runtime_smoke_full_flow_and_restart(paper_runtime_settings):
     from quant_lab.main import create_app
 
-    account = await _create_account(paper_client)
-    await _create_policy(paper_client, account["id"])
-    session = await _create_session(paper_client, account["id"])
-    await _start_session(paper_client, session["id"], 1)
-
-    r1 = await paper_client.post(
-        f"/api/v1/paper/sessions/{session['id']}/advance",
-        json={"idempotency_key": "k1", "expected_version": 2, "expected_current_session_date": None},
-    )
-    assert r1.json()["resulting_session_date"] == "2026-01-02"
-    assert r1.json()["idempotent_replay"] is False
-
-    retry = await paper_client.post(
-        f"/api/v1/paper/sessions/{session['id']}/advance",
-        json={"idempotency_key": "k1", "expected_version": 2, "expected_current_session_date": None},
-    )
-    assert retry.json()["idempotent_replay"] is True
-    assert retry.json()["resulting_session_date"] == "2026-01-02"
-
-    r2 = await paper_client.post(
-        f"/api/v1/paper/sessions/{session['id']}/advance",
-        json={"idempotency_key": "k2", "expected_version": 3, "expected_current_session_date": "2026-01-02"},
-    )
-    assert r2.json()["resulting_session_date"] == "2026-01-05"
-
-    # restart: rebuild the app against the same SQLite
-    settings = Settings(project_root=tmp_path, runtime_root=Path(tmp_path) / "runtime")
-    monkeypatch.setenv("QUANT_LAB_PROJECT_ROOT", str(tmp_path))
-    monkeypatch.setenv("QUANT_LAB_RUNTIME_ROOT", str(settings.runtime_root))
-    app = create_app(settings)
-    transport = ASGITransport(app=app)
+    app1 = create_app(paper_runtime_settings)
+    transport1 = ASGITransport(app=app1)
     async with (
-        app.router.lifespan_context(app),
-        AsyncClient(transport=transport, base_url="http://testserver") as client2,
+        app1.router.lifespan_context(app1),
+        AsyncClient(transport=transport1, base_url="http://testserver") as client1,
+    ):
+        account = await _create_account(client1)
+        await _create_policy(client1, account["id"])
+        session = await _create_session(client1, account["id"])
+        await _start_session(client1, session["id"], 1)
+
+        r1 = await client1.post(
+            f"/api/v1/paper/sessions/{session['id']}/advance",
+            json={
+                "idempotency_key": "restart-k1",
+                "expected_version": 2,
+                "expected_current_session_date": None,
+            },
+        )
+        assert r1.json()["resulting_session_date"] == "2026-01-02"
+        retry = await client1.post(
+            f"/api/v1/paper/sessions/{session['id']}/advance",
+            json={
+                "idempotency_key": "restart-k1",
+                "expected_version": 2,
+                "expected_current_session_date": None,
+            },
+        )
+        assert retry.json()["idempotent_replay"] is True
+
+        manual = await client1.post(
+            f"/api/v1/paper/sessions/{session['id']}/order-intents",
+            json={
+                "idempotency_key": "restart-manual",
+                "instrument_id": "600000.XSHG",
+                "side": "BUY",
+                "quantity": 100,
+                "order_type": "MARKET_ON_OPEN_SIMULATED",
+                "limit_price": None,
+                "reason": "restart acceptance",
+                "metadata": {},
+            },
+        )
+        assert manual.status_code == 201
+        assert (await client1.get(f"/api/v1/paper/sessions/{session['id']}/fills")).json()[
+            "items"
+        ] == []
+        r2 = await client1.post(
+            f"/api/v1/paper/sessions/{session['id']}/advance",
+            json={
+                "idempotency_key": "restart-k2",
+                "expected_version": 3,
+                "expected_current_session_date": "2026-01-02",
+            },
+        )
+        assert r2.json()["resulting_session_date"] == "2026-01-05"
+
+    # app1 lifespan 与连接均已销毁; app2 重新连接同一 TEMP runtime 后继续推进.
+    app2 = create_app(paper_runtime_settings)
+    transport2 = ASGITransport(app=app2)
+    async with (
+        app2.router.lifespan_context(app2),
+        AsyncClient(transport=transport2, base_url="http://testserver") as client2,
     ):
         account2 = await client2.get(f"/api/v1/paper/accounts/{account['id']}")
         assert account2.status_code == 200
@@ -612,3 +797,51 @@ async def test_runtime_smoke_full_flow_and_restart(paper_client, tmp_path, monke
         equity = await client2.get(f"/api/v1/paper/sessions/{session['id']}/equity")
         assert len(equity.json()["items"]) == 2
 
+        continued = await client2.post(
+            f"/api/v1/paper/sessions/{session['id']}/advance",
+            json={
+                "idempotency_key": "restart-k3",
+                "expected_version": 4,
+                "expected_current_session_date": "2026-01-05",
+            },
+        )
+        assert continued.status_code == 200
+        assert continued.json()["resulting_session_date"] == "2026-01-06"
+        assert len((await client2.get(f"/api/v1/paper/sessions/{session['id']}/orders")).json()["items"]) == 1
+        assert len((await client2.get(f"/api/v1/paper/sessions/{session['id']}/fills")).json()["items"]) == 1
+        assert len((await client2.get(f"/api/v1/paper/sessions/{session['id']}/positions")).json()["items"]) == 1
+        assert len((await client2.get(f"/api/v1/paper/sessions/{session['id']}/risk-decisions")).json()["items"]) == 1
+        audit_items = (
+            await client2.get(f"/api/v1/paper/sessions/{session['id']}/audit")
+        ).json()["items"]
+        assert {"SESSION_ADVANCED", "ORDER_FILLED"} <= {
+            item["event_type"] for item in audit_items
+        }
+
+        frozen = await client2.post(f"/api/v1/paper/accounts/{account['id']}/freeze")
+        assert frozen.json()["status"] == "FROZEN"
+        unfrozen = await client2.post(f"/api/v1/paper/accounts/{account['id']}/unfreeze")
+        assert unfrozen.json()["status"] == "ACTIVE"
+        policy = await client2.get(f"/api/v1/paper/accounts/{account['id']}/risk")
+        assert policy.status_code == 200
+
+    from sqlalchemy import text
+
+    from quant_lab.db.sqlite import create_sqlite_engine
+
+    verification_engine = create_sqlite_engine(paper_runtime_settings)
+    with verification_engine.connect() as connection:
+        account_audit_types = {
+            row[0]
+            for row in connection.execute(
+                text(
+                    "SELECT event_type FROM paper_audit_events "
+                    "WHERE paper_account_id = :account_id"
+                ),
+                {"account_id": account["id"]},
+            )
+        }
+    verification_engine.dispose()
+    assert {"RISK_POLICY_VERSION_CREATED", "ACCOUNT_FROZEN", "ACCOUNT_UNFROZEN"} <= (
+        account_audit_types
+    )

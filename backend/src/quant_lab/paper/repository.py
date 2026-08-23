@@ -318,6 +318,23 @@ class PaperRepository:
                 created_at=now,
             )
             session.add(model)
+            session.flush()
+            session.add(
+                PaperAuditEventModel(
+                    id=str(uuid4()),
+                    paper_account_id=policy.paper_account_id,
+                    event_type=AuditEventType.RISK_POLICY_VERSION_CREATED.value,
+                    payload_json=json.dumps(
+                        {
+                            "risk_policy_id": policy.id,
+                            "risk_policy_version_id": model.id,
+                            "version": model.version,
+                            "policy_fingerprint": model.policy_fingerprint,
+                        }
+                    ),
+                    created_at=now,
+                )
+            )
             session.commit()
             session.refresh(model)
             session.expunge(model)
