@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 import sqlalchemy as sa
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import inspect, text
 from sqlalchemy.orm import Session
 
@@ -109,6 +110,8 @@ def test_risk_policy_version_immutable(engine):
         )
 
 
+REVISION_0010 = "20260722_0010"
+REVISION_0011 = "20260722_0011"
 REVISION_0012 = "20260722_0012"
 REVISION_0013 = "20260722_0013"
 SESSION_0013_COLUMNS = {
@@ -140,6 +143,48 @@ def test_empty_database_upgrades_to_0013_head(tmp_path: Path, monkeypatch) -> No
             text("SELECT version_num FROM alembic_version")
         ).scalar_one() == REVISION_0013
     assert _column_names(engine, "paper_sessions") >= SESSION_0013_COLUMNS
+    engine.dispose()
+
+
+def test_alembic_has_single_head() -> None:
+    heads = ScriptDirectory.from_config(Config("backend/alembic.ini")).get_heads()
+    assert heads == [REVISION_0013]
+
+
+def test_head_upgrade_is_idempotent(tmp_path: Path, monkeypatch) -> None:
+    settings = Settings(project_root=tmp_path, runtime_root=tmp_path / "runtime")
+    monkeypatch.setenv("QUANT_LAB_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("QUANT_LAB_RUNTIME_ROOT", str(settings.runtime_root))
+    config = Config("backend/alembic.ini")
+    command.upgrade(config, "head")
+    command.upgrade(config, "head")
+    engine = create_sqlite_engine(settings)
+    with engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT version_num FROM alembic_version")
+        ).scalar_one() == REVISION_0013
+    engine.dispose()
+
+
+@pytest.mark.parametrize("starting_revision", [REVISION_0010, REVISION_0011, REVISION_0012])
+def test_prior_paper_revision_upgrades_to_head(
+    tmp_path: Path, monkeypatch, starting_revision: str
+) -> None:
+    settings = Settings(project_root=tmp_path, runtime_root=tmp_path / "runtime")
+    monkeypatch.setenv("QUANT_LAB_PROJECT_ROOT", str(tmp_path))
+    monkeypatch.setenv("QUANT_LAB_RUNTIME_ROOT", str(settings.runtime_root))
+    config = Config("backend/alembic.ini")
+    command.upgrade(config, starting_revision)
+    engine = create_sqlite_engine(settings)
+    with engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT version_num FROM alembic_version")
+        ).scalar_one() == starting_revision
+    command.upgrade(config, "head")
+    with engine.connect() as connection:
+        assert connection.execute(
+            text("SELECT version_num FROM alembic_version")
+        ).scalar_one() == REVISION_0013
     engine.dispose()
 
 

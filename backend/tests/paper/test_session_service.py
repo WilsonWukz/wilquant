@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
+import sqlalchemy as sa
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -29,6 +30,7 @@ from quant_lab.paper.models import (
     PaperPositionLotModel,
     PaperPositionModel,
     PaperRiskDecisionModel,
+    PaperRiskPolicyVersionModel,
     PaperSessionAdvanceModel,
 )
 from quant_lab.paper.repository import PaperRepository
@@ -339,9 +341,20 @@ def test_duplicate_advance_no_duplicate_snapshot(paper_env):
 
 
 def test_stale_expected_version_rejected(paper_env):
-    _, started = _running_session(paper_env)
+    account_id, started = _running_session(paper_env)
+    first = _advance(paper_env, started.paper_session_id, "conflict-a1", started.version, None)
+    before_account = paper_env.repository.get_account(account_id)
+    before_session = paper_env.repository.get_session(started.paper_session_id)
     with pytest.raises(PaperError, match="SESSION_VERSION_CONFLICT"):
-        _advance(paper_env, started.paper_session_id, "k1", started.version - 1, None)
+        _advance(paper_env, started.paper_session_id, "conflict-a2", started.version, D1)
+    after_account = paper_env.repository.get_account(account_id)
+    after_session = paper_env.repository.get_session(started.paper_session_id)
+    assert after_session.version == before_session.version == first.session_version
+    assert after_session.current_session_date == before_session.current_session_date == D1
+    assert after_account.cash == before_account.cash
+    with Session(paper_env.engine) as session:
+        assert session.scalars(select(PaperFillModel)).all() == []
+        assert session.scalars(select(PaperPositionModel)).all() == []
 
 
 def test_stale_expected_date_rejected(paper_env):
@@ -404,6 +417,12 @@ def test_full_sell_consumes_fifo_lots(paper_env):
                      side="BUY", quantity=100, execution_date=D2)
     r1 = _advance(env, started.paper_session_id, "k1", started.version, None)
     r2 = _advance(env, started.paper_session_id, "k2", r1.session_version, D1)
+    with Session(env.engine) as session:
+        bought_lot = session.scalars(select(PaperPositionLotModel)).one()
+        bought_position = session.scalars(select(PaperPositionModel)).one()
+    assert bought_lot.acquired_date == D2
+    assert bought_lot.sellable_from_date == D3
+    assert bought_position.sellable_quantity == 0
     _submitted_order(env, account_id, started.paper_session_id, instrument_id="600000.XSHG",
                      side="SELL", quantity=100, execution_date=D3)
     r3 = _advance(env, started.paper_session_id, "k3", r2.session_version, D2)
@@ -488,7 +507,7 @@ def test_missing_bar_uses_last_known_close(paper_env):
                      side="BUY", quantity=100, execution_date=D2)
     r1 = _advance(env, started.paper_session_id, "k1", started.version, None)
     r2 = _advance(env, started.paper_session_id, "k2", r1.session_version, D1)
-    _advance(env, started.paper_session_id, "k3", r2.session_version, D2)
+    r3 = _advance(env, started.paper_session_id, "k3", r2.session_version, D2)
     with Session(env.engine) as session:
         position = session.scalars(
             select(PaperPositionModel).where(PaperPositionModel.instrument_id == "000001.XSHE")
@@ -496,6 +515,16 @@ def test_missing_bar_uses_last_known_close(paper_env):
     assert position.market_value == Decimal(100) * Decimal("20.4")
     audit = _session_advanced_audit(env, started.paper_session_id)
     assert "000001.XSHE" in audit["stale_instrument_ids"]
+    r4 = _advance(env, started.paper_session_id, "k4", r3.session_version, D3)
+    _advance(env, started.paper_session_id, "k5", r4.session_version, D4)
+    with Session(env.engine) as session:
+        recovered = session.scalars(
+            select(PaperPositionModel).where(PaperPositionModel.instrument_id == "000001.XSHE")
+        ).one()
+    assert recovered.market_value == Decimal(100) * Decimal("21.0")
+    assert "000001.XSHE" not in _session_advanced_audit(
+        env, started.paper_session_id
+    )["stale_instrument_ids"]
 
 
 def test_daily_and_cumulative_pnl(paper_env):
@@ -602,12 +631,17 @@ def test_risk_reject_creates_risk_rejected_order(paper_env):
         metadata_json="{}",
         idempotency_key="manual-reject",
     )
+    cash_before = env.repository.get_account(account_id).cash
     result = _advance(env, started.paper_session_id, "k1", started.version, None)
     assert result.risk_rejected_count == 1
     with Session(env.engine) as session:
         order = session.scalars(select(PaperOrderModel)).one()
     assert order.status == PaperOrderStatus.RISK_REJECTED.value
     assert order.reject_reason is not None
+    assert env.repository.get_account(account_id).cash == cash_before
+    with Session(env.engine) as session:
+        assert session.scalars(select(PaperFillModel)).all() == []
+        assert session.scalars(select(PaperPositionModel)).all() == []
 
 
 # --- failure / rollback ---
@@ -631,8 +665,30 @@ def test_fill_persistence_failure_rolls_back(paper_env, monkeypatch):
     with Session(env.engine) as session:
         fills = session.scalars(select(PaperFillModel)).all()
         snapshots = session.scalars(select(PaperAccountSnapshotModel)).all()
+        positions = session.scalars(select(PaperPositionModel)).all()
+        lots = session.scalars(select(PaperPositionLotModel)).all()
+        trade_ledgers = session.scalars(
+            select(PaperLedgerEntryModel).where(
+                PaperLedgerEntryModel.entry_type == LedgerEntryType.TRADE_SETTLEMENT.value
+            )
+        ).all()
+        failed_advances = session.scalars(
+            select(PaperSessionAdvanceModel).where(
+                PaperSessionAdvanceModel.status == "FAILED"
+            )
+        ).all()
+        failed_audits = session.scalars(
+            select(PaperAuditEventModel).where(
+                PaperAuditEventModel.event_type == AuditEventType.SESSION_FAILED.value
+            )
+        ).all()
     assert fills == []
     assert [s.session_date for s in snapshots] == [D1]
+    assert positions == []
+    assert lots == []
+    assert trade_ledgers == []
+    assert len(failed_advances) == 1
+    assert len(failed_audits) == 1
     model = env.repository.get_session(started.paper_session_id)
     assert model.status == PaperSessionStatus.FAILED.value
     assert model.current_session_date == D1
@@ -771,6 +827,174 @@ def test_restart_persistence(paper_env):
         )
     assert after_counts == before_counts
 
+
+def test_phase5_strategy_restart_history_and_accounting_acceptance(paper_env):
+    env = paper_env
+    strategy_id = make_strategy(env)
+    strategy_library = StrategyLibrary(env.engine)
+    strategy_before, _ = strategy_library.version(strategy_id)
+    account_id, started = _running_session(env, strategy_version_id=strategy_id)
+    policy = _ensure_policy(env, account_id)
+
+    first = _advance(env, started.paper_session_id, "phase5-a1", started.version, None)
+    with Session(env.engine) as session:
+        counts_before_replay = tuple(
+            len(session.scalars(select(model)).all())
+            for model in (
+                PaperFillModel,
+                PaperOrderModel,
+                PaperAccountSnapshotModel,
+                PaperLedgerEntryModel,
+                PaperRiskDecisionModel,
+                PaperSessionAdvanceModel,
+            )
+        )
+    replay = _advance(env, started.paper_session_id, "phase5-a1", started.version, None)
+    assert replay.idempotent_replay is True
+    assert replay.resulting_session_date == first.resulting_session_date == D1
+    with Session(env.engine) as session:
+        assert tuple(
+            len(session.scalars(select(model)).all())
+            for model in (
+                PaperFillModel,
+                PaperOrderModel,
+                PaperAccountSnapshotModel,
+                PaperLedgerEntryModel,
+                PaperRiskDecisionModel,
+                PaperSessionAdvanceModel,
+            )
+        ) == counts_before_replay
+
+    second = _advance(env, started.paper_session_id, "phase5-a2", first.session_version, D1)
+    v2 = env.repository.create_risk_policy_version(
+        risk_policy_id=policy.id,
+        max_single_order_notional=Decimal("1000000"),
+        max_single_position_weight=Decimal("1"),
+        max_total_exposure=Decimal("1"),
+        cash_buffer_ratio=Decimal("0"),
+        max_daily_loss=Decimal("0.5"),
+        max_drawdown=Decimal("0.5"),
+        max_open_orders=100,
+        allowed_security_types=["EQUITY"],
+    )
+    env.session_service.create_manual_intent(
+        paper_session_id=started.paper_session_id,
+        idempotency_key="phase5-manual-sell",
+        instrument_id="600000.XSHG",
+        side="SELL",
+        quantity=100,
+        order_type="MARKET_ON_OPEN_SIMULATED",
+        limit_price=None,
+        reason="phase-5 history acceptance",
+        metadata={},
+    )
+    strategy_library.archive(strategy_before.strategy_definition_id)
+
+    rebuilt = rebuild_services(env)
+    third = _advance(rebuilt, started.paper_session_id, "phase5-a3", second.session_version, D2)
+    fourth = _advance(rebuilt, started.paper_session_id, "phase5-a4", third.session_version, D3)
+    fifth = _advance(rebuilt, started.paper_session_id, "phase5-a5", fourth.session_version, D4)
+    assert fifth.resulting_session_date == date(2026, 1, 8)
+
+    session_model = rebuilt.repository.get_session(started.paper_session_id)
+    account = rebuilt.repository.get_account(account_id)
+    assert session_model.status == PaperSessionStatus.RUNNING.value
+    assert session_model.current_session_date == fifth.resulting_session_date
+    assert session_model.strategy_version_id == strategy_id
+    assert json.loads(session_model.execution_config_json) == ZERO_EXECUTION_CONFIG
+    strategy_after, _ = strategy_library.version(strategy_id)
+    assert strategy_after.strategy_spec_json == strategy_before.strategy_spec_json
+    assert strategy_after.strategy_fingerprint == strategy_before.strategy_fingerprint
+
+    with Session(rebuilt.engine) as session:
+        fills = session.scalars(select(PaperFillModel).order_by(PaperFillModel.created_at)).all()
+        orders = session.scalars(select(PaperOrderModel).order_by(PaperOrderModel.created_at)).all()
+        positions = session.scalars(select(PaperPositionModel)).all()
+        lots = session.scalars(select(PaperPositionLotModel)).all()
+        ledgers = session.scalars(
+            select(PaperLedgerEntryModel).order_by(PaperLedgerEntryModel.created_at)
+        ).all()
+        snapshots = session.scalars(
+            select(PaperAccountSnapshotModel).order_by(PaperAccountSnapshotModel.session_date)
+        ).all()
+        decisions = session.scalars(
+            select(PaperRiskDecisionModel).order_by(PaperRiskDecisionModel.evaluated_at)
+        ).all()
+        policy_versions = session.scalars(
+            select(PaperRiskPolicyVersionModel).order_by(PaperRiskPolicyVersionModel.version)
+        ).all()
+        audits = session.scalars(
+            select(PaperAuditEventModel).where(PaperAuditEventModel.paper_account_id == account_id)
+        ).all()
+
+    assert len(fills) == 2
+    assert [decision.risk_policy_version for decision in decisions] == [1, 2]
+    assert decisions[0].risk_policy_version_id == policy_versions[0].id
+    assert decisions[1].risk_policy_version_id == v2.id == policy_versions[1].id
+
+    trade_ledgers = [
+        entry for entry in ledgers if entry.entry_type == LedgerEntryType.TRADE_SETTLEMENT.value
+    ]
+    assert len(trade_ledgers) == len(fills)
+    assert not [entry for entry in ledgers if entry.entry_type == LedgerEntryType.FEE.value]
+    assert {entry.paper_fill_id for entry in trade_ledgers} == {fill.id for fill in fills}
+    rebuilt_cash = account.initial_cash + sum(
+        (entry.cash_delta for entry in trade_ledgers), Decimal("0")
+    )
+    assert rebuilt_cash == account.cash == ledgers[-1].cash_after
+
+    for position in positions:
+        position_lots = [lot for lot in lots if lot.paper_position_id == position.id]
+        assert position.total_quantity == sum(lot.remaining_quantity for lot in position_lots)
+        assert position.sellable_quantity == sum(
+            lot.remaining_quantity
+            for lot in position_lots
+            if lot.sellable_from_date <= session_model.current_session_date
+        )
+    for order in orders:
+        order_fills = [fill for fill in fills if fill.paper_order_id == order.id]
+        assert order.filled_quantity == sum(fill.quantity for fill in order_fills)
+
+    assert len(snapshots) == 5
+    assert all(snapshot.equity == snapshot.cash + snapshot.market_value for snapshot in snapshots)
+    latest = snapshots[-1]
+    assert latest.cash == account.cash
+    assert latest.market_value == account.market_value
+    assert latest.equity == account.account_equity
+    assert account.account_equity == account.cash + account.market_value
+
+    audit_types = {event.event_type for event in audits}
+    assert {
+        AuditEventType.ACCOUNT_CREATED.value,
+        AuditEventType.RISK_POLICY_VERSION_CREATED.value,
+        AuditEventType.SESSION_CREATED.value,
+        AuditEventType.SESSION_STARTED.value,
+        AuditEventType.SESSION_ADVANCED.value,
+        AuditEventType.INTENT_CREATED.value,
+        AuditEventType.RISK_APPROVED.value,
+        AuditEventType.ORDER_CREATED.value,
+        AuditEventType.ORDER_SUBMITTED.value,
+        AuditEventType.ORDER_FILLED.value,
+    } <= audit_types
+
+    immutable_targets = {
+        "paper_risk_decisions": decisions[0].id,
+        "paper_fills": fills[0].id,
+        "paper_ledger_entries": ledgers[0].id,
+        "paper_audit_events": audits[0].id,
+        "paper_risk_policy_versions": policy_versions[0].id,
+    }
+    for table_name, row_id in immutable_targets.items():
+        for statement in (
+            f"UPDATE {table_name} SET id = id WHERE id = :row_id",
+            f"DELETE FROM {table_name} WHERE id = :row_id",
+        ):
+            with Session(rebuilt.engine) as session, pytest.raises(
+                sa.exc.IntegrityError, match="immutable"
+            ):
+                session.execute(sa.text(statement), {"row_id": row_id})
+                session.commit()
+
 # --- partial fill / freeze ---
 
 
@@ -805,7 +1029,7 @@ def test_partial_fill_then_expired(paper_env):
     _submitted_order(env, account.id, started.paper_session_id, instrument_id="600000.XSHG",
                      side="BUY", quantity=10000, execution_date=D2)
     r1 = _advance(env, started.paper_session_id, "k1", started.version, None)
-    _advance(env, started.paper_session_id, "k2", r1.session_version, D1)
+    r2 = _advance(env, started.paper_session_id, "k2", r1.session_version, D1)
     with Session(env.engine) as session:
         order = session.scalars(select(PaperOrderModel)).one()
         fill = session.scalars(select(PaperFillModel)).one()
@@ -813,6 +1037,9 @@ def test_partial_fill_then_expired(paper_env):
     assert order.status == PaperOrderStatus.EXPIRED.value
     assert order.filled_quantity == 5000
     assert order.accepted_quantity == 5000
+    _advance(env, started.paper_session_id, "k3", r2.session_version, D2)
+    with Session(env.engine) as session:
+        assert len(session.scalars(select(PaperFillModel)).all()) == 1
 
 
 def test_freeze_cancels_pending_orders(paper_env):
@@ -867,3 +1094,71 @@ def test_freeze_cancels_pending_orders(paper_env):
     assert len(decisions) == 2
     assert any("DAILY_LOSS_LIMIT" in d.reason_codes_json for d in decisions)
 
+    env.session_service.create_manual_intent(
+        paper_session_id=started.paper_session_id,
+        idempotency_key="frozen-follow-up",
+        instrument_id="600000.XSHG",
+        side="BUY",
+        quantity=100,
+        order_type="MARKET_ON_OPEN_SIMULATED",
+        limit_price=None,
+        reason="frozen account acceptance",
+        metadata={},
+    )
+    frozen_advance = _advance(
+        env, started.paper_session_id, "freeze-k2", result.session_version, D1
+    )
+    assert frozen_advance.risk_rejected_count == 1
+
+    with Session(env.engine) as session:
+        policy_version_ids = tuple(
+            session.scalars(select(PaperRiskPolicyVersionModel.id)).all()
+        )
+        decision_history = tuple(
+            (decision.id, decision.decision, decision.reason_codes_json)
+            for decision in session.scalars(
+                select(PaperRiskDecisionModel).order_by(PaperRiskDecisionModel.evaluated_at)
+            ).all()
+        )
+        snapshot_history = tuple(
+            (snapshot.id, snapshot.daily_pnl, snapshot.drawdown)
+            for snapshot in session.scalars(
+                select(PaperAccountSnapshotModel).order_by(
+                    PaperAccountSnapshotModel.session_date
+                )
+            ).all()
+        )
+    assert any("ACCOUNT_FROZEN" in reasons for _, _, reasons in decision_history)
+
+    unfrozen = env.risk_service.unfreeze_account(account_id=account_id, actor="USER")
+    assert unfrozen.status == PaperAccountStatus.ACTIVE.value
+    with Session(env.engine) as session:
+        assert tuple(session.scalars(select(PaperRiskPolicyVersionModel.id)).all()) == (
+            policy_version_ids
+        )
+        assert tuple(
+            (decision.id, decision.decision, decision.reason_codes_json)
+            for decision in session.scalars(
+                select(PaperRiskDecisionModel).order_by(PaperRiskDecisionModel.evaluated_at)
+            ).all()
+        ) == decision_history
+        assert tuple(
+            (snapshot.id, snapshot.daily_pnl, snapshot.drawdown)
+            for snapshot in session.scalars(
+                select(PaperAccountSnapshotModel).order_by(
+                    PaperAccountSnapshotModel.session_date
+                )
+            ).all()
+        ) == snapshot_history
+        account_audits = {
+            event.event_type
+            for event in session.scalars(
+                select(PaperAuditEventModel).where(
+                    PaperAuditEventModel.paper_account_id == account_id
+                )
+            ).all()
+        }
+    assert {
+        AuditEventType.ACCOUNT_FROZEN.value,
+        AuditEventType.ACCOUNT_UNFROZEN.value,
+    } <= account_audits
