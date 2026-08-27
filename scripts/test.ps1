@@ -73,7 +73,11 @@ try {
 
         $basetemp = Join-Path $tempRoot ("quant-lab-pytest-" + $Name + "-" + [guid]::NewGuid().ToString('N'))
         $arguments = @('-m', 'pytest') + $Paths + @('-q', '-p', 'no:cacheprovider', '--basetemp', $basetemp)
-        Invoke-ProjectCommand -FilePath $pythonPath -ArgumentList $arguments
+        try {
+            Invoke-ProjectCommand -FilePath $pythonPath -ArgumentList $arguments
+        } finally {
+            Remove-ProjectTestTempDirectory -Path $basetemp
+        }
     }
 
     $env:RUFF_CACHE_DIR = Join-Path $tempRoot 'quant-lab-ruff-cache'
@@ -90,6 +94,7 @@ try {
     Invoke-PytestShard -Name 'research' -Paths @('backend/tests/research')
     Invoke-PytestShard -Name 'paper' -Paths @('backend/tests/paper')
     Invoke-PytestShard -Name 'execution' -Paths @('backend/tests/execution')
+    Invoke-PytestShard -Name 'ai' -Paths @('backend/tests/ai')
     Invoke-ProjectCommand -FilePath $pythonPath -ArgumentList @(
         '-m', 'ruff', 'check', 'backend/src', 'backend/tests', 'backend/alembic'
     )

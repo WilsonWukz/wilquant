@@ -1,6 +1,6 @@
 # wilquant AI Research Copilot 架构设计
 
-- 状态：已设计；仅批准架构边界，不批准实现
+- 状态：已设计；AI-1 Provenance Foundation 已批准实施
 - 日期：2026-08-27
 - 范围：AI 研究分析、证据追溯、案例记忆、研究论点、上下文 Copilot 与草稿动作
 - 前置边界：Phase 5 PAPER、Phase 6A LIVE + Multi-Market Architecture、ADR-0002
@@ -61,19 +61,19 @@ Core 掌握事实、时间截断、Prompt 版本、输入输出指纹、校验�
 
 > Inspired by architectural patterns observed in PA_Agent; implementation must be independent.
 
-## 2. 本轮边界
+## 2. AI-1 实施边界
 
-本轮是 DESIGN ONLY：
+架构设计轮已结束，当前只实施 AI-1 Provenance Foundation：
 
-- 不新增 AI 业务代码；
-- 不新增 migration 或数据库表；
+- 允许新增 provenance 领域代码、八张 SQLite 表、migration、只读查询与 Case/Run 控制面 API；
 - 不安装 LLM SDK；
 - 不创建空目录；
 - 不配置或读取真实 AI API Key；
 - 不修改 Phase 6A 的 LIVE state machine、ExecutionGateway、BrokerAdapter 或 Capital Authorization；
-- 不进入 AI-1。
+- 不实现 Provider Host、模型调用、EvidencePack/retrieval、chat、recommendation execution 或 UI；
+- 完成后停止，不进入 AI-2。
 
-本文中的表、DTO、API、模块和测试均为后续独立实现草案。
+本文明确标注 AI-1 已实现子集；AI-2～AI-8 的表、DTO、API、模块和测试仍是后续独立实现草案。
 
 ### 2.1 Goals
 
@@ -92,7 +92,7 @@ Core 掌握事实、时间截断、Prompt 版本、输入输出指纹、校验�
 - 不把 ResearchCase 当作事实数据库；
 - 不把 model confidence 当作胜率；
 - 不复制 PA_Agent 的代码、Prompt、决策树、文件 schema 或 GUI；
-- 不在本轮实现任何 schema、API、Provider Host 或 UI。
+- 不在 AI-1 实现 Provider Host、模型分析、Copilot、case retrieval、draft execution 或 UI。
 
 ## 3. 术语与事实标签
 
@@ -236,7 +236,7 @@ backend/src/quant_lab/ai/
     fingerprints.py        canonicalization and SHA-256
     cases.py               ResearchCase service and temporal cutoff
     evidence.py            EvidencePack assembly and EvidenceRef
-    provenance.py          AIAnalysisRun / Attempt / Trace services
+    provenance.py          AIAnalysisRun / AIAnalysisAttempt / Trace services
     orchestration.py       stage transitions only
     gates.py               deterministic ResearchGate
     validation/            six focused validators + retry policy
@@ -363,6 +363,10 @@ RealtimeResearchDataProvider
 ```
 
 二者返回相同的证据 DTO，但 provenance 和 freshness 规则不同。Realtime provider 的数据如果无法证明时间、标的 mapping 或完整性，标记 `UNVERIFIED` 并使 ResearchGate abstain，不能由模型“看起来合理”而升级为 FACT。
+
+`MarketDataFreshnessClass` 正式定义为 `IMMUTABLE_HISTORICAL / EOD / DELAYED / REALTIME`。每个未来的 `AIAnalysisContext` 必须保存 `source`、`observed_at`、`market_timestamp`、`freshness_class`、`known_delay_seconds` 与 `snapshot_fingerprint`。ResearchGate 按 analysis type 判断 freshness 是否足够；第一版 REALTIME research 建议要求 snapshot age 不超过 30 秒，超过返回 `STALE_MARKET_DATA`。
+
+已知 15 分钟延迟源必须标记 `DELAYED`，只能用于允许延迟数据的研究任务。yfinance 等来源只可按经过验证的能力用于 historical/EOD/delayed research，不得默认视作 LIVE execution-quality market state。AI research freshness 与 Phase 6 broker/account snapshot freshness 是两个独立指标，绝不复用阈值或状态。
 
 ## 11. 两阶段分析与 ResearchGate
 
@@ -493,7 +497,7 @@ REVIEW_PAPER_RESULTS
 | immutable fact drift | 永不重试当前 run | `REJECTED_FACT_DRIFT` |
 | unauthorized action | 永不重试当前 run | `REJECTED_CAPABILITY` |
 
-每次模型调用产生独立 `AIModelAttempt`。重试不能覆盖原响应；成功也不能删除失败 attempt。若任何输出试图改变冻结事实，整个 run fail closed。
+每次模型调用产生独立 `AIAnalysisAttempt`。重试不能覆盖原响应；成功也不能删除失败 attempt。若任何输出试图改变冻结事实，整个 run fail closed。
 
 ## 13. Provenance 与 AnalysisTrace
 
@@ -517,7 +521,7 @@ status
 
 ### 13.2 Model config provenance
 
-`AIModelConfigVersion` 至少冻结 provider kind、model identifier、endpoint profile ID、temperature/top_p、max output、timeout、reasoning setting、structured output mode、tool configuration 和 compatibility flags。system prompt 通过 PromptTemplateVersion 独立冻结；早期 tool configuration 固定为 `NONE`。secret 只保存 `secret_ref` 与 configured 状态，绝不进入版本内容、日志或 fingerprint。
+`AIModelConfigVersion` 至少冻结 provider kind、model identifier、ProviderProfile identity、temperature/top_p、max output、timeout、reasoning setting、structured output mode、tool configuration 和 compatibility flags。`ProviderProfile` 冻结 `provider_id`、`base_url_identity`、model、supported capabilities、reasoning mode、JSON/schema capability 与 streaming capability。system prompt 通过 PromptTemplateVersion 独立冻结；早期 tool configuration 固定为 `NONE`。secret 只保存 `secret_ref` 与 configured 状态，绝不进入版本内容、日志或 fingerprint。
 
 ### 13.3 AIAnalysisRun
 
@@ -547,7 +551,7 @@ started_at / completed_at
 failure_code / safe_failure_message
 ```
 
-### 13.4 AIModelAttempt 与 AIUsage
+### 13.4 AIAnalysisAttempt 与 AIUsage
 
 每次调用保存 provider request ID、attempt number、input/output hash、latency、finish reason、prompt/cached/completion/total tokens、provider-reported cost（若有）、本地估算成本、currency 和 estimation flag。用量可按 Experiment、AnalysisRun、Month 和 Model 聚合；仅供审计和研究预算提示，不影响资本。
 
@@ -602,7 +606,7 @@ TraceNode 不采用 PA_Agent 的 Price Action 节点、编号或决策树内容�
 6. diversity 与 max-per-source 限制；
 7. 保存候选、分数分解、排除原因和 retrieval fingerprint。
 
-向量检索不能绕过 hard filters。第一版可使用 SQLite FTS/确定性 structured score；embedding 是后续可替换 ranker，不是 provenance 基础依赖。
+向量检索不能绕过 hard filters。AI-2 第一版固定为 `hard filters -> deterministic structured similarity -> SQLite FTS lexical score -> rank`，不实现 embedding。hard filters 至少覆盖 market、asset_type、temporal cutoff、universe compatibility、MarketRules compatibility 与 strategy family。Embedding 最早延迟至 AI-5，并且永远不能绕过 hard filters。
 
 ResearchCase 是 retrieval memory，不是 source of truth。它只能引用 DatasetVersion、BacktestRun、Experiment、Paper records 等事实；case 中的总结、标签或结果不能反过来覆盖源事实。
 
@@ -648,6 +652,8 @@ PROPOSED -> ACTIVE -> CLOSED
 ```
 
 Thesis header 保存稳定 `thesis_id`；内容只存在于不可变 `ResearchThesisRevision`。新观点追加 revision，不能 UPDATE/DELETE 旧 revision。每个 revision 绑定 case/run/evidence、FACT/INFERENCE/HYPOTHESIS、支持与反对证据、失效条件、`UNCHANGED/WEAKENED/STRENGTHENED/INVALIDATED` 变化类型和作者（USER/AI_DRAFT）。只有 USER 可激活 AI 草稿。
+
+`ResearchJournal` 与 `ResearchThesis` 永久分离。Journal 是 append-oriented 的用户/研究人员便笺，可承载 observation、hypothesis note、decision、todo 与 conclusion；Thesis 是具有 stable identity、immutable revisions、lifecycle、explicit evidence 与 invalidation condition 的结构化研究对象。AI 只能生成 `JournalDraft` 或 `ThesisRevisionDraft`，不能修改历史 Journal 或原地修改 Thesis revision；用户确认后只能追加新记录/新 revision，Journal 不迁移为 Thesis storage。
 
 ### 15.2 TradeThesis 的边界
 
@@ -731,6 +737,8 @@ AIModelResponseEnvelope
 
 Core 不依赖具体 SDK；FakeAIProvider 必须先于真实 adapter。Provider Host 无权访问 wilquant SQLite、Parquet、Gateway 或 Broker network endpoints。
 
+首个真实 adapter 是通用 `OpenAICompatibleProvider`，由 `ProviderProfile` 描述 endpoint/model/capabilities；第一个真实验收对象优先使用 DeepSeek 官方或兼容 endpoint，但领域层禁止出现 `if provider == "deepseek"`。Claude 原生 Messages API 等非兼容协议以后增加独立 adapter，不改变 `AIProvider` domain contract。
+
 ### 18.2 AI secret
 
 - 首选 Windows Credential Manager；
@@ -742,6 +750,24 @@ Core 不依赖具体 SDK；FakeAIProvider 必须先于真实 adapter。Provider 
 - Provider Host 启动时按 Windows 用户身份读取，内存中短时使用，错误信息脱敏；
 - secret rotation 不修改历史 model config fingerprint，历史只记录 profile version。
 
+### 18.3 Provider Host transport
+
+AI-3 使用只绑定 `127.0.0.1` 的 HTTP/JSON 独立 AI Provider Host。可复用未来抽象出的 localhost authenticated transport 工具与思想，但不复用 ExecutionGateway process、port、bearer token、Broker credential namespace、crash state 或 kill state；Gateway 与 Provider Host 互相不得调用。
+
+协议必须包含独立随机短期 secret、protocol version、request ID、timestamp 与 replay protection；secret 不进入日志、命令行或 audit。未来可替换 transport 而不改变 AI domain contract。当前不采用 Windows named pipe。
+
+### 18.4 Raw response、reasoning 与删除语义
+
+永久且不可变地保存 normalized accepted output、parsed structured output、validation、EvidenceRef、Prompt/model fingerprints、provider metadata、usage、finish reason 和 raw artifact hash。Raw provider content 默认保存为独立 artifact，不塞入普通业务表；用户显式删除内容时保留 run/hash/provenance，并追加 `RAW_ARTIFACT_DELETED` tombstone。
+
+`reasoning_content` 默认 `NOT_RETAINED`。只有用户显式启用 `debug_reasoning_retention` 才能单独保存，且必须与普通 response 分离、经 secret/redaction pipeline、默认 UI 隐藏、默认 export 排除。AI-1 没有 provider call，因此只冻结 hash/provenance 字段，不创建 raw artifact 或 tombstone service。
+
+### 18.5 AI research cost budget
+
+预算同时支持 soft warning 与 hard limit，至少分为 per-run、per-provider-profile、daily/monthly research budget。80% 产生 warning；100% 必须在 provider call 前以 `AI_BUDGET_EXCEEDED` hard stop。Retry token/cost 计入同一 run，不得自动切换更昂贵模型、静默突破或用 reasoning retry 绕过预算。
+
+预算只约束 AI research，不影响 Backtest、PAPER、RiskEngine、LIVE safety 或 ExecutionGateway。AI-1 只实现 usage/cost provenance contract；真正 enforcement 在 AI-3 Provider Host 阶段落地。
+
 ## 19. 失败语义与隔离
 
 | 失败 | AI run | Backtest/PAPER/LIVE |
@@ -752,38 +778,41 @@ Core 不依赖具体 SDK；FakeAIProvider 必须先于真实 adapter。Provider 
 | temporal leak/fact drift | `REJECTED_*` | 无变化 |
 | database write failure | run transaction rollback/failed audit | PAPER/LIVE 事务不参与 |
 | AI secret missing | provider profile unavailable | Broker secret/状态无变化 |
+| AI budget hard limit | `AI_BUDGET_EXCEEDED`，provider call 前停止 | 无变化 |
 | process crash/restart | incomplete attempt recovered as failed/abandoned | 不触发 Gateway recovery |
 
 AI health 不能成为 `/health/ready` 对 Data/Backtest/PAPER/LIVE 的必需条件。应提供独立 optional component status；AI 不可用时，非 AI 研究功能继续工作。
 
-## 20. Schema 草案（不执行 migration）
+## 20. Schema 状态
 
-建议后续新增：
+AI-1 已执行 migration `20260827_0014`；其余仍为后续草案：
 
-| 表/聚合 | 关键用途 | 可变性 |
-|---|---|---|
-| `ai_model_config_versions` | provider/model 参数 provenance | immutable |
-| `ai_prompt_template_versions` | Prompt 与变量契约 | immutable |
-| `research_cases` | 时间截断根输入 | immutable |
-| `research_evidence_packs` | case 的证据集合与 hash | immutable |
-| `research_evidence_refs` | 可验证证据引用 | immutable |
-| `ai_analysis_runs` | run 状态与 provenance | 状态受控，accepted payload immutable |
-| `ai_model_attempts` | 每次 provider call | append-only |
-| `ai_analysis_trace_events` | 分析事件 | append-only |
-| `research_diagnoses` | Stage 1 accepted result | immutable |
-| `research_gate_decisions` | deterministic gate | immutable |
-| `research_recommendations` | Stage 2 accepted result | immutable |
-| `research_case_retrieval_snapshots` | 候选与排名分解 | immutable |
-| `research_theses` | 稳定 identity/current projection | 受控 projection |
-| `research_thesis_revisions` | thesis 内容 | append-only |
-| `copilot_conversations` | 上下文 identity | 受控关闭 |
-| `copilot_turns` | 用户/AI turn + provenance | append-only |
-| `research_action_drafts` | allowlisted draft | 状态受控，payload immutable |
-| `ai_usage_ledger` | token/cost usage | append-only |
+| 表/聚合 | 关键用途 | 可变性 | 状态 |
+|---|---|---|---|
+| `ai_model_config_versions` | provider/model 参数 provenance | immutable | AI-1 implemented |
+| `ai_prompt_template_versions` | Prompt 与变量契约 | immutable | AI-1 implemented |
+| `ai_research_cases` | 时间截断根输入 | immutable | AI-1 implemented |
+| `research_evidence_packs` | case 的证据集合与 hash | immutable | AI-2 planned |
+| `ai_evidence_refs` | 可验证证据引用 | immutable | AI-1 minimal implemented |
+| `ai_analysis_runs` | run 状态与 provenance | 状态受控，终态 immutable | AI-1 implemented |
+| `ai_analysis_attempts` | 每次 provider call | 一次终态收敛后 immutable | AI-1 implemented |
+| `ai_analysis_trace_events` | 分析事件 | append-only | AI-1 implemented |
+| `research_diagnoses` | Stage 1 accepted result | immutable | AI-4 planned |
+| `research_gate_decisions` | deterministic gate | immutable | AI-4 planned |
+| `research_recommendations` | Stage 2 accepted result | immutable | AI-4 planned |
+| `research_case_retrieval_snapshots` | 候选与排名分解 | immutable | AI-2 planned |
+| `research_theses` | 稳定 identity/current projection | 受控 projection | AI-5 planned |
+| `research_thesis_revisions` | thesis 内容 | append-only | AI-5 planned |
+| `copilot_conversations` | 上下文 identity | 受控关闭 | AI-6 planned |
+| `copilot_turns` | 用户/AI turn + provenance | append-only | AI-6 planned |
+| `research_action_drafts` | allowlisted draft | 状态受控，payload immutable | AI-6 planned |
+| `ai_usage_ledger` | token/cost usage | append-only | AI-1 implemented |
 
 数据库 trigger/约束应禁止 accepted outputs、attempts、trace、evidence、revisions 和 usage 的 UPDATE/DELETE。现有可编辑/可删除 ResearchJournal 不能直接充当 AI 审计记忆；AI 内容应先进入 append-only draft/revision 体系。
 
 ## 21. API 草案
+
+AI-1 已实现 Case/Run 创建及 Case/Run/Trace/Usage 查询；下列 EvidencePack、cancel、raw、conversation、draft 和 secret API 仍按对应后续阶段实施。
 
 ```text
 POST /api/v1/research-cases
@@ -828,7 +857,7 @@ Research Copilot 作为现有 Research Workspace 的上下文面板/详情页，
 
 草稿动作必须显示：动作类型、将创建的研究对象、冻结 input hash、差异预览和“需要用户确认”。AI 页面不出现 LIVE 激活、资本增加、解冻、kill reset 或真实下单按钮。
 
-Raw/Debug 为高级模式，默认只显示摘要、版本、validation errors、retrieved cases、token usage 和 latency；巨大 JSON 需要显式展开或下载。
+Raw/Debug 为高级模式，默认显示 model/provider、Prompt fingerprint、response status、parsed output、validation、token usage、latency、retrieved cases 与 error category。Raw response 需要高级展开；reasoning 需要再次显式展开，并显示“模型内部推理文本不属于确定性证据”。所有内容必须脱敏，不使用 `dangerouslySetInnerHTML`，默认不进入 export、不默认复制到 clipboard，credential/auth header 永不展示。
 
 ## 23. Prompt injection 与内容安全
 
@@ -904,7 +933,7 @@ AI-8 AI Acceptance / Security / Evals
 
 ### AI-1 Provenance Foundation
 
-版本化 Prompt/Model config、ResearchCase identity、最小 EvidenceRef registry、AIAnalysisRun/Attempt/Trace/Usage、canonical fingerprint、append-only persistence、read-only APIs；仅 Fake provider record fixture，不调用模型。
+状态：implemented。已完成版本化 Prompt/Model config、ResearchCase identity、最小 EvidenceRef registry、AIAnalysisRun/AIAnalysisAttempt/Trace/Usage、canonical fingerprint、append-only persistence 与安全 API；不调用模型。
 
 ### AI-2 Evidence & Temporal Foundation
 
@@ -912,7 +941,7 @@ EvidencePack assembly、historical provider、cutoff policy、case retrieval sna
 
 ### AI-3 Provider Isolation
 
-AIProvider contract、独立 Provider Host、authenticated local protocol、Windows Credential Manager/DPAPI fallback、Fake provider fault injection；仍不实现业务 recommendation。
+AIProvider contract、独立 Provider Host、127.0.0.1 authenticated HTTP/JSON、Windows Credential Manager/DPAPI fallback、Fake provider fault injection、通用 OpenAI-compatible adapter、usage budget enforcement 与首个真实 endpoint 验收；仍不实现业务 recommendation。
 
 ### AI-4 Two-Stage Analysis
 
@@ -1032,22 +1061,15 @@ provider outage、prompt injection、temporal leakage、fact drift、secret leak
 19. **AI secret 在哪里？** Windows Credential Manager 优先，DPAPI fallback；Provider Host 独享，与 Broker secret 分 namespace/进程。
 20. **第一轮实现？** AI-1 Provenance Foundation：先做最小 EvidenceRef、版本、指纹、run/attempt/trace/usage 和 append-only，不接模型。
 
-## 31. 真实剩余设计问题
+## 31. 已确认后续设计决定
 
-这些问题不阻塞 AI-1 provenance，但必须在相应阶段前一次性确认：
+此前八个开放问题已一次性关闭：首个真实实现采用通用 OpenAI-compatible adapter；AI Host 使用独立 127.0.0.1 authenticated HTTP/JSON；Raw 使用独立 artifact + 可删除内容/保留 tombstone，reasoning 默认不保留；AI-2 使用 hard filters + structured score + SQLite FTS；realtime provider 等待 6B，先冻结 freshness contract；Journal/Thesis 分离；预算同时 soft warning + hard limit；Raw/Reasoning 分层显式展开与脱敏。
 
-1. AI-3 首个真实 provider 及其 structured-output/usage 能力；
-2. AI Provider Host IPC 是复用经过抽象的 localhost protocol 基础设施，还是独立 named pipe；不得复用 Gateway token/进程；
-3. raw provider response 的默认保留周期、导出与删除政策；append-only 审计与本地隐私需平衡；
-4. AI-2 是否先只做 SQLite FTS + structured score，embedding 推迟至 AI-5；推荐是；
-5. realtime research data 的首个可信来源与 freshness policy；
-6. 现有可修改/删除 ResearchJournal 是否在 AI-5 迁移为 revision model，还是继续作为用户便笺并与 Thesis 分离；推荐分离；
-7. AI cost budget 是仅告警还是硬停止；推荐按 provider/profile 设置研究预算硬上限，但与资本完全无关；
-8. AI-7 Raw tab 是否默认隐藏 provider reasoning 字段；推荐默认隐藏、显式展开并脱敏。
+AI-1 现在可独立于 6B 开始；AI-1/AI-2/AI-3 基础设施与 Phase 6 并行，US-specific realtime diagnosis、US MarketRules evidence、US session-aware analysis 与 US cross-market cases 等待 6B。首批真实能力仍只定位为 `RESEARCH COPILOT`，输出只允许 `ResearchRecommendation / ExperimentDraft / JournalDraft / ThesisRevisionDraft`，永不新增或修改执行授权对象。
 
 ## 32. 完成边界
 
-Phase 本轮完成只代表架构、ADR、自审、后续计划和全量门禁完成。它不代表任何 AI 能力已运行，也不授权进入 AI-1。
+架构决策现已授权进入 AI-1 Provenance Foundation。AI-1 只实现 run/attempt/trace/usage、最小 EvidenceRef、Prompt/Model config versions、canonical fingerprints 与 append-only persistence；不调用 provider、不安装 LLM SDK、不做 chat/retrieval/UI/recommendation execution。AI-1 完成全量验收后必须停止，不自动进入 AI-2。
 
 预期状态：
 

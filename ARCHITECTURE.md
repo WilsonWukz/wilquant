@@ -4,7 +4,7 @@
 
 WIL_QUANT 是面向个人 A 股研究、回测、PAPER 模拟执行和复盘的本地模块化单体。Phase 0–5 的优先级是正确性、资金与状态一致性、可追溯性、可测试性和可解释性。
 
-当前系统没有 Broker、LIVE execution、真实 credential、真实账户、真实资金授权或 AI runtime integration。
+当前系统没有 Broker、LIVE execution、真实 credential、真实账户、真实资金授权、AI Provider Host 或模型调用。已实现的 AI-1 仅是无模型的 provenance foundation。
 
 ## 当前系统边界
 
@@ -17,6 +17,7 @@ FastAPI Modular Monolith
     ├── Strategy Library
     ├── Backtest Domain
     ├── Research Domain
+    ├── AI Provenance Domain
     ├── Shared ExecutionKernel
     └── Paper Domain
          ├── PaperSession Advance
@@ -42,9 +43,10 @@ SQLite 是控制面和事务状态的事实来源，保存：
 - TradingCalendarVersion、MarketDataProfile 和标的元数据；
 - StrategyDefinition、StrategyVersion、BacktestRun 和结果索引；
 - Research experiment、journal 与报告元数据；
+- AI ResearchCase、EvidenceRef、Prompt/Model config version、AnalysisRun、AnalysisAttempt、Trace 与 Usage；
 - PaperAccount、RiskPolicyVersion、RiskDecision、Session、Intent、Order、Fill、Position、Lot、Snapshot、Ledger、Audit 和 Advance record。
 
-Alembic 只管理 SQLite schema。Paper 的 RiskDecision、Fill、Ledger、Audit 和 RiskPolicyVersion 由数据库 trigger 阻止 UPDATE/DELETE。
+Alembic 只管理 SQLite schema。Paper 的 RiskDecision、Fill、Ledger、Audit 和 RiskPolicyVersion，以及 AI provenance 的不可变记录、身份字段与终态，由数据库 trigger 保护。
 
 ### Parquet
 
@@ -120,6 +122,18 @@ Research Domain 消费已完成的 BacktestRun 和不可变策略/数据版本�
 - 追加式 research journal。
 
 Research Domain 不修改行情版本、策略版本或执行结果，也不能创建 PaperFill、修改现金或绕过 RiskEngine。
+
+## AI Provenance Domain
+
+`quant_lab.ai` 是 AI Research Copilot 的无模型控制面基础，只负责：
+
+- 冻结 multi-market ResearchCase identity、UTC cutoff 与确定性版本绑定；
+- 注册属于 Case 且不越过 cutoff 的最小 EvidenceRef；
+- 发布不可变 PromptTemplateVersion 与 provider-neutral ModelConfigVersion；
+- 记录 AIAnalysisRun、AIAnalysisAttempt、AnalysisTrace 与 AIUsage；
+- 使用 canonical fingerprint、受控状态转换、append-only triggers 和 restart recovery 保存 provenance。
+
+AI package 不导入 PAPER/LIVE/Gateway/Broker 或 provider network client。当前 API 只允许创建 Case/Run 和读取 Case/Run/Trace/Usage，不暴露 attempt 完成、raw content、provider call 或任何执行操作。AI 数据库不可用时只让这些可选 API 返回安全错误，不改变 SQLite/DuckDB readiness，也不影响现有研究、回测或 PAPER。
 
 ## Paper Domain
 
@@ -206,7 +220,7 @@ React 页面包括系统状态、导入、数据集、市场数据、回测、�
 - 真实账户查询或真实 order submission；
 - LIVE execution；
 - scheduler/background worker；
-- AI/LLM/Agent integration；
+- AI Provider/LLM 调用、AI 对话、诊断、建议或 Agent 工具执行；
 - 任何可跳过 RiskDecision、直接创建 Fill 或直接改现金的外部路径。
 
 ## FUTURE / NOT IMPLEMENTED

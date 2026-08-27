@@ -13,7 +13,7 @@ from quant_lab.db.sqlite import create_sqlite_engine
 
 REVISION_0003 = "20260720_0003"
 REVISION_0004 = "20260720_0004"
-REVISION_HEAD = "20260722_0013"
+REVISION_HEAD = "20260827_0014"
 
 PREVIEW_COLUMNS = {
     "source_file_size",

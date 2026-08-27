@@ -114,6 +114,7 @@ REVISION_0010 = "20260722_0010"
 REVISION_0011 = "20260722_0011"
 REVISION_0012 = "20260722_0012"
 REVISION_0013 = "20260722_0013"
+REVISION_HEAD = "20260827_0014"
 SESSION_0013_COLUMNS = {
     "replay_start_date",
     "replay_end_date",
@@ -141,14 +142,14 @@ def test_empty_database_upgrades_to_0013_head(tmp_path: Path, monkeypatch) -> No
     with engine.connect() as connection:
         assert connection.execute(
             text("SELECT version_num FROM alembic_version")
-        ).scalar_one() == REVISION_0013
+        ).scalar_one() == REVISION_HEAD
     assert _column_names(engine, "paper_sessions") >= SESSION_0013_COLUMNS
     engine.dispose()
 
 
 def test_alembic_has_single_head() -> None:
     heads = ScriptDirectory.from_config(Config("backend/alembic.ini")).get_heads()
-    assert heads == [REVISION_0013]
+    assert heads == [REVISION_HEAD]
 
 
 def test_head_upgrade_is_idempotent(tmp_path: Path, monkeypatch) -> None:
@@ -162,7 +163,7 @@ def test_head_upgrade_is_idempotent(tmp_path: Path, monkeypatch) -> None:
     with engine.connect() as connection:
         assert connection.execute(
             text("SELECT version_num FROM alembic_version")
-        ).scalar_one() == REVISION_0013
+        ).scalar_one() == REVISION_HEAD
     engine.dispose()
 
 
@@ -184,7 +185,7 @@ def test_prior_paper_revision_upgrades_to_head(
     with engine.connect() as connection:
         assert connection.execute(
             text("SELECT version_num FROM alembic_version")
-        ).scalar_one() == REVISION_0013
+        ).scalar_one() == REVISION_HEAD
     engine.dispose()
 
 
@@ -210,5 +211,5 @@ def test_0013_downgrades_to_0012_and_upgrades_again(
     with engine.connect() as connection:
         assert connection.execute(
             text("SELECT version_num FROM alembic_version")
-        ).scalar_one() == REVISION_0013
+        ).scalar_one() == REVISION_HEAD
     engine.dispose()

@@ -1,6 +1,6 @@
 # AI-1 Provenance Foundation Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 建立不调用真实模型的 AI provenance 基础，使 ResearchCase、Prompt/Model 版本、AnalysisRun、Attempt、Trace 和 Usage 可被不可变地记录、校验和查询。
 
@@ -8,13 +8,17 @@
 
 **Tech Stack:** Python 3.12、FastAPI、Pydantic v2、SQLAlchemy 2、Alembic、SQLite、pytest、Ruff、mypy、React/TypeScript（仅保持 API 不影响现有前端）
 
+**执行状态（2026-08-27）：** AI-1 已按本计划完成实现与全量验收，停止在 AI-2 之前。本次按用户授权合并为一个本地提交；下文各任务“提交”检查项表示变更已纳入最终提交，不表示实际生成了逐任务 commit。
+
 ---
 
 ## 开始前检查
 
-- 当前计划假设 Alembic head 仍为 `20260722_0013`。执行时先运行 `alembic heads`；若 head 已变化，停止并重新编号 migration，不创建分叉 head。
-- 使用单独实现任务开始时创建的工作区隔离；本设计轮次不执行本计划。
+- 执行开始时确认 Alembic head 为 `20260722_0013`，AI-1 migration 顺序升级为唯一 head `20260827_0014`，未创建分叉 head。
+- 按用户授权在当前 `dev` 工作区实施并本地提交，不推送、不合并。
 - 不从 PA_Agent 复制代码、schema、Prompt、错误分类或 tests。
+- AI-1 只保存 OpenAI-compatible 所需的 provider-neutral profile/config provenance；不实现 adapter、HTTP transport 或厂商分支。
+- Raw artifact/tombstone、budget enforcement、SQLite FTS retrieval、freshness gate 与 UI 均不属于 AI-1；AI-1 只保留未来所需的 hash、usage/cost 和配置契约。
 - 每个任务提交前运行该任务的定向测试；最后运行 `scripts/test.ps1`。
 
 ### Task 1: 建立 AI 纯领域类型与 canonical fingerprints
@@ -26,7 +30,7 @@
 - Test: `backend/tests/ai/test_fingerprints.py`
 - Test: `backend/tests/ai/test_domain.py`
 
-- [ ] **Step 1: 写 fingerprint 失败测试**
+- [x] **Step 1: 写 fingerprint 失败测试**
 
 测试必须证明字典 key 顺序不影响 SHA-256，而 list 顺序和字段值变化会影响：
 
@@ -42,13 +46,13 @@ def test_fingerprint_preserves_list_order() -> None:
     assert fingerprint_payload({"items": [1, 2]}) != fingerprint_payload({"items": [2, 1]})
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
-Run: `\.venv\Scripts\python.exe -m pytest backend/tests/ai/test_fingerprints.py -q`
+Run: `.\.venv\Scripts\python.exe -m pytest backend/tests/ai/test_fingerprints.py -q`
 
 Expected: FAIL，原因是 `quant_lab.ai` 尚不存在。
 
-- [ ] **Step 3: 实现领域 enum/value contracts**
+- [x] **Step 3: 实现领域 enum/value contracts**
 
 `domain.py` 定义且只定义：
 
@@ -72,7 +76,7 @@ class AIAnalysisRunStatus(StrEnum):
     REJECTED = "REJECTED"
 
 
-class AIModelAttemptStatus(StrEnum):
+class AIAnalysisAttemptStatus(StrEnum):
     STARTED = "STARTED"
     COMPLETED = "COMPLETED"
     FAILED = "FAILED"
@@ -97,15 +101,15 @@ def fingerprint_payload(payload: object) -> str:
     return hashlib.sha256(canonical_json_bytes(payload)).hexdigest()
 ```
 
-- [ ] **Step 4: 写并运行 enum 稳定性测试**
+- [x] **Step 4: 写并运行 enum 稳定性测试**
 
 `test_domain.py` 断言所有 persisted enum 的 `.value` 等于上面字符串，并断言没有 `ORDER`、`FILL`、`LIVE`、`CAPITAL` 成员。
 
-Run: `\.venv\Scripts\python.exe -m pytest backend/tests/ai/test_domain.py backend/tests/ai/test_fingerprints.py -q`
+Run: `.\.venv\Scripts\python.exe -m pytest backend/tests/ai/test_domain.py backend/tests/ai/test_fingerprints.py -q`
 
 Expected: PASS。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```powershell
 git add backend/src/quant_lab/ai backend/tests/ai/test_domain.py backend/tests/ai/test_fingerprints.py
@@ -118,7 +122,7 @@ git commit -m "feat(ai): add provenance domain fingerprints"
 - Create: `backend/src/quant_lab/ai/persistence.py`
 - Test: `backend/tests/ai/test_persistence_models.py`
 
-- [ ] **Step 1: 写 ORM schema 失败测试**
+- [x] **Step 1: 写 ORM schema 失败测试**
 
 测试使用临时 SQLite `Base.metadata.create_all()`，确认以下 table 存在：
 
@@ -129,7 +133,7 @@ EXPECTED = {
     "ai_research_cases",
     "ai_evidence_refs",
     "ai_analysis_runs",
-    "ai_model_attempts",
+    "ai_analysis_attempts",
     "ai_analysis_trace_events",
     "ai_usage_ledger",
 }
@@ -137,13 +141,13 @@ EXPECTED = {
 
 并检查所有 fingerprint 列 `nullable=False`、长度 64，secret/API key 列完全不存在。
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
-Run: `\.venv\Scripts\python.exe -m pytest backend/tests/ai/test_persistence_models.py -q`
+Run: `.\.venv\Scripts\python.exe -m pytest backend/tests/ai/test_persistence_models.py -q`
 
 Expected: FAIL，原因是 persistence model 尚不存在。
 
-- [ ] **Step 3: 实现 ORM models**
+- [x] **Step 3: 实现 ORM models**
 
 `persistence.py` 创建以下 SQLAlchemy models：
 
@@ -154,7 +158,8 @@ AIPromptTemplateVersionModel
   validator_policy_version, status, created_by, created_at
 
 AIModelConfigVersionModel
-  id, provider_kind, model_identifier, endpoint_profile_id,
+  id, provider_kind, provider_id, base_url_identity, model_identifier,
+  endpoint_profile_id, capabilities_json,
   parameters_json, fingerprint, created_by, created_at
 
 AIResearchCaseModel
@@ -180,7 +185,7 @@ AIAnalysisRunModel
   normalized_output_fingerprint, started_at, completed_at,
   failure_code, safe_failure_message, created_at
 
-AIModelAttemptModel
+AIAnalysisAttemptModel
   id, run_id, attempt_number, status, provider_request_id,
   input_fingerprint, output_fingerprint, latency_ms, finish_reason,
   failure_code, started_at, completed_at
@@ -197,13 +202,13 @@ AIUsageLedgerModel
 
 约束：`(run_id, attempt_number)`、`(run_id, sequence)` 唯一；所有外键使用明确 RESTRICT/CASCADE，不能 cascade 删除 provenance；`parameters_json` 明确禁止 `api_key`/`secret` 由 service 层验证。
 
-- [ ] **Step 4: 运行 model tests**
+- [x] **Step 4: 运行 model tests**
 
-Run: `\.venv\Scripts\python.exe -m pytest backend/tests/ai/test_persistence_models.py -q`
+Run: `.\.venv\Scripts\python.exe -m pytest backend/tests/ai/test_persistence_models.py -q`
 
 Expected: PASS。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```powershell
 git add backend/src/quant_lab/ai/persistence.py backend/tests/ai/test_persistence_models.py
@@ -216,7 +221,7 @@ git commit -m "feat(ai): model provenance persistence"
 - Create: `backend/alembic/versions/20260827_0014_ai_provenance_foundation.py`
 - Test: `backend/tests/ai/test_provenance_migration.py`
 
-- [ ] **Step 1: 写 migration 失败测试**
+- [x] **Step 1: 写 migration 失败测试**
 
 测试从空 SQLite 执行 `upgrade head`，检查 Task 2 的八张表，并对以下表分别执行 UPDATE/DELETE，预期 `sqlite3.IntegrityError`：
 
@@ -225,20 +230,20 @@ ai_prompt_template_versions
 ai_model_config_versions
 ai_research_cases
 ai_evidence_refs
-ai_model_attempts
+ai_analysis_attempts
 ai_analysis_trace_events
 ai_usage_ledger
 ```
 
 `ai_analysis_runs` 只允许 service 定义的状态列转换；完成后 fingerprint/output/failure 字段不可再修改。
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
-Run: `\.venv\Scripts\python.exe -m pytest backend/tests/ai/test_provenance_migration.py -q`
+Run: `.\.venv\Scripts\python.exe -m pytest backend/tests/ai/test_provenance_migration.py -q`
 
 Expected: FAIL，表或 revision 尚不存在。
 
-- [ ] **Step 3: 实现 migration**
+- [x] **Step 3: 实现 migration**
 
 revision metadata 固定为：
 
@@ -251,19 +256,19 @@ depends_on = None
 
 `upgrade()` 创建与 ORM 一致的表、unique/check constraints 和命名 triggers；`downgrade()` 先删 triggers 再按依赖逆序删表。run status check 只接受 Task 1 的 `AIAnalysisRunStatus` 值。
 
-- [ ] **Step 4: 验证 upgrade/downgrade/upgrade**
+- [x] **Step 4: 验证 upgrade/downgrade/upgrade**
 
-Run: `\.venv\Scripts\alembic.exe -c backend/alembic.ini upgrade head`
+Run: `.\.venv\Scripts\alembic.exe -c backend/alembic.ini upgrade head`
 
-Run: `\.venv\Scripts\alembic.exe -c backend/alembic.ini downgrade 20260722_0013`
+Run: `.\.venv\Scripts\alembic.exe -c backend/alembic.ini downgrade 20260722_0013`
 
-Run: `\.venv\Scripts\alembic.exe -c backend/alembic.ini upgrade head`
+Run: `.\.venv\Scripts\alembic.exe -c backend/alembic.ini upgrade head`
 
 Expected: 三条命令 exit 0，head 为 `20260827_0014`。
 
-- [ ] **Step 5: 运行 migration tests 并提交**
+- [x] **Step 5: 运行 migration tests 并提交**
 
-Run: `\.venv\Scripts\python.exe -m pytest backend/tests/ai/test_provenance_migration.py -q`
+Run: `.\.venv\Scripts\python.exe -m pytest backend/tests/ai/test_provenance_migration.py -q`
 
 Expected: PASS。
 
@@ -279,7 +284,7 @@ git commit -m "feat(ai): persist append-only provenance"
 - Create: `backend/src/quant_lab/ai/configuration.py`
 - Test: `backend/tests/ai/test_configuration_service.py`
 
-- [ ] **Step 1: 写发布与 secret 拒绝测试**
+- [x] **Step 1: 写发布与 secret 拒绝测试**
 
 ```python
 def test_model_config_rejects_secret_fields(service) -> None:
@@ -295,15 +300,15 @@ def test_model_config_rejects_secret_fields(service) -> None:
 
 另测相同 canonical content 幂等返回同一版本，不同 content 创建新不可变版本。
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
-Run: `\.venv\Scripts\python.exe -m pytest backend/tests/ai/test_configuration_service.py -q`
+Run: `.\.venv\Scripts\python.exe -m pytest backend/tests/ai/test_configuration_service.py -q`
 
 Expected: FAIL，service 尚不存在。
 
-- [ ] **Step 3: 实现 repository 和 service**
+- [x] **Step 3: 实现 repository 和 service**
 
-`configuration.py` 定义 `AIProvenanceError`、`PromptTemplateVersionService`、`AIModelConfigVersionService`。禁止字段集合至少为：
+`configuration.py` 定义 `AIProvenanceError`、`PromptTemplateVersionService`、`AIModelConfigVersionService`。Model config 的 fingerprint 必须冻结 `provider_kind/provider_id/base_url_identity/model_identifier/endpoint_profile_id/capabilities/parameters`；首轮 fixture 使用 `OPENAI_COMPATIBLE` 或 `FAKE`，领域层不得出现 DeepSeek 特判。禁止字段集合至少为：
 
 ```python
 FORBIDDEN_SECRET_KEYS = frozenset(
@@ -313,15 +318,15 @@ FORBIDDEN_SECRET_KEYS = frozenset(
 
 递归检查 nested dict/list。fingerprint payload 不含数据库 ID/created_at，包含全部行为参数。
 
-- [ ] **Step 4: 运行测试和静态检查**
+- [x] **Step 4: 运行测试和静态检查**
 
-Run: `\.venv\Scripts\python.exe -m pytest backend/tests/ai/test_configuration_service.py -q`
+Run: `.\.venv\Scripts\python.exe -m pytest backend/tests/ai/test_configuration_service.py -q`
 
-Run: `\.venv\Scripts\python.exe -m ruff check backend/src/quant_lab/ai backend/tests/ai`
+Run: `.\.venv\Scripts\python.exe -m ruff check backend/src/quant_lab/ai backend/tests/ai`
 
 Expected: PASS / All checks passed。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```powershell
 git add backend/src/quant_lab/ai/repository.py backend/src/quant_lab/ai/configuration.py backend/tests/ai/test_configuration_service.py
@@ -336,7 +341,7 @@ git commit -m "feat(ai): publish prompt and model versions"
 - Test: `backend/tests/ai/test_research_cases.py`
 - Test: `backend/tests/ai/test_evidence_refs.py`
 
-- [ ] **Step 1: 写 identity 与时间测试**
+- [x] **Step 1: 写 identity 与时间测试**
 
 测试覆盖：
 
@@ -349,13 +354,13 @@ git commit -m "feat(ai): publish prompt and model versions"
 
 `test_evidence_refs.py` 另测 EvidenceRef 必须属于一个 case，source/version/hash/locator/time/instrument 均进入 fingerprint，且 `known_at > case.as_of_utc` 时拒绝注册。
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
-Run: `\.venv\Scripts\python.exe -m pytest backend/tests/ai/test_research_cases.py backend/tests/ai/test_evidence_refs.py -q`
+Run: `.\.venv\Scripts\python.exe -m pytest backend/tests/ai/test_research_cases.py backend/tests/ai/test_evidence_refs.py -q`
 
 Expected: FAIL。
 
-- [ ] **Step 3: 实现输入 DTO 与 service**
+- [x] **Step 3: 实现输入 DTO 与 service**
 
 核心 DTO：
 
@@ -401,9 +406,9 @@ class EvidenceRefInput:
     integrity_status: str
 ```
 
-- [ ] **Step 4: 运行 tests 并提交**
+- [x] **Step 4: 运行 tests 并提交**
 
-Run: `\.venv\Scripts\python.exe -m pytest backend/tests/ai/test_research_cases.py backend/tests/ai/test_evidence_refs.py -q`
+Run: `.\.venv\Scripts\python.exe -m pytest backend/tests/ai/test_research_cases.py backend/tests/ai/test_evidence_refs.py -q`
 
 Expected: PASS。
 
@@ -418,7 +423,7 @@ git commit -m "feat(ai): freeze research case evidence identity"
 - Create: `backend/src/quant_lab/ai/provenance.py`
 - Test: `backend/tests/ai/test_provenance_service.py`
 
-- [ ] **Step 1: 写状态与 append-only 失败测试**
+- [x] **Step 1: 写状态与 append-only 失败测试**
 
 测试合法状态：
 
@@ -430,13 +435,13 @@ RUNNING -> FAILED/CANCELLED/REJECTED
 
 终态不能再变化。Attempt number、Trace sequence 必须从 1 单调递增；同一 run 重复 number/sequence 冲突。Usage 必须引用已存在 attempt，token 非负且 `total_tokens` 与 components 一致或明确 provider-reported override。
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
-Run: `\.venv\Scripts\python.exe -m pytest backend/tests/ai/test_provenance_service.py -q`
+Run: `.\.venv\Scripts\python.exe -m pytest backend/tests/ai/test_provenance_service.py -q`
 
 Expected: FAIL。
 
-- [ ] **Step 3: 实现 provenance service**
+- [x] **Step 3: 实现 provenance service**
 
 公开方法固定为：
 
@@ -456,9 +461,9 @@ recover_incomplete_runs(now_utc)
 
 `recover_incomplete_runs` 将重启前 `STARTED` attempt 标记 `ABANDONED`、run 标记 `FAILED`，追加 trace；不重试、不调用 provider。
 
-- [ ] **Step 4: 运行测试和提交**
+- [x] **Step 4: 运行测试和提交**
 
-Run: `\.venv\Scripts\python.exe -m pytest backend/tests/ai/test_provenance_service.py -q`
+Run: `.\.venv\Scripts\python.exe -m pytest backend/tests/ai/test_provenance_service.py -q`
 
 Expected: PASS。
 
@@ -475,7 +480,7 @@ git commit -m "feat(ai): record analysis provenance lifecycle"
 - Modify: `backend/src/quant_lab/main.py`
 - Test: `backend/tests/ai/test_ai_research_api.py`
 
-- [ ] **Step 1: 写 API 失败测试**
+- [x] **Step 1: 写 API 失败测试**
 
 覆盖：
 
@@ -490,13 +495,13 @@ GET  /api/v1/ai-analysis-runs/{run_id}/usage
 
 API 不提供 create attempt/complete run 等低层 provider 操作给前端，不返回 Prompt content、raw response、secret_ref 或内部 exception。
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
-Run: `\.venv\Scripts\python.exe -m pytest backend/tests/ai/test_ai_research_api.py -q`
+Run: `.\.venv\Scripts\python.exe -m pytest backend/tests/ai/test_ai_research_api.py -q`
 
 Expected: FAIL/404。
 
-- [ ] **Step 3: 实现严格 Pydantic DTO 与 routes**
+- [x] **Step 3: 实现严格 Pydantic DTO 与 routes**
 
 Request 使用 `ConfigDict(extra="forbid")`。Response 至少返回 ID、status、fingerprints、safe failure、timestamps 和 lineage。error contract 延续现有：
 
@@ -506,11 +511,11 @@ Request 使用 `ConfigDict(extra="forbid")`。Response 至少返回 ID、status�
 
 `main.py` 只装配 repository/service/router，不装载 SDK/secret/provider，也不让 AI service 成为 health readiness 的 required component。
 
-- [ ] **Step 4: 运行 API tests、mypy 并提交**
+- [x] **Step 4: 运行 API tests、mypy 并提交**
 
-Run: `\.venv\Scripts\python.exe -m pytest backend/tests/ai/test_ai_research_api.py -q`
+Run: `.\.venv\Scripts\python.exe -m pytest backend/tests/ai/test_ai_research_api.py -q`
 
-Run: `\.venv\Scripts\python.exe -m mypy backend/src`
+Run: `.\.venv\Scripts\python.exe -m mypy backend/src`
 
 Expected: PASS / Success: no issues found。
 
@@ -523,9 +528,9 @@ git commit -m "feat(ai): expose provenance foundation api"
 
 **Files:**
 - Create: `backend/tests/ai/test_ai_execution_boundary.py`
-- Modify: `backend/tests/test_health.py`
+- Modify: `backend/tests/test_health_api.py`
 
-- [ ] **Step 1: 写 forbidden import test**
+- [x] **Step 1: 写 forbidden import test**
 
 AST 扫描 `backend/src/quant_lab/ai`，拒绝这些 import 前缀：
 
@@ -541,20 +546,20 @@ FORBIDDEN = (
 
 允许导入纯 `quant_lab.execution`/market domain DTO 只应在未来设计明确后加入；AI-1 不需要。
 
-- [ ] **Step 2: 写 readiness non-interference test**
+- [x] **Step 2: 写 readiness non-interference test**
 
 构造 AI repository 初始化失败/不可用情形，断言现有 health、dataset、backtest、paper route 的装配和 readiness 仍按既有 required components 工作；AI 状态只能作为 optional detail。
 
-- [ ] **Step 3: 运行确认边界**
+- [x] **Step 3: 运行确认边界**
 
-Run: `\.venv\Scripts\python.exe -m pytest backend/tests/ai/test_ai_execution_boundary.py backend/tests/test_health.py -q`
+Run: `.\.venv\Scripts\python.exe -m pytest backend/tests/ai/test_ai_execution_boundary.py backend/tests/test_health_api.py -q`
 
 Expected: PASS。
 
-- [ ] **Step 4: 提交**
+- [x] **Step 4: 提交**
 
 ```powershell
-git add backend/tests/ai/test_ai_execution_boundary.py backend/tests/test_health.py
+git add backend/tests/ai/test_ai_execution_boundary.py backend/tests/test_health_api.py
 git commit -m "test(ai): enforce execution isolation"
 ```
 
@@ -566,17 +571,17 @@ git commit -m "test(ai): enforce execution isolation"
 - Modify: `docs/superpowers/specs/2026-08-27-ai-research-copilot-architecture.md`
 - Test: `scripts/test.ps1`
 
-- [ ] **Step 1: 更新实现状态但不超报**
+- [x] **Step 1: 更新实现状态但不超报**
 
 README 只增加“AI provenance foundation（尚无模型分析）”；ARCHITECTURE 增加 AI module、八张表、optional health 和 forbidden execution dependencies。Spec 的 AI-1 标记为 implemented only after tests pass；AI-2～AI-8 保持 planned。
 
-- [ ] **Step 2: 检查 OpenAPI**
+- [x] **Step 2: 检查 OpenAPI**
 
-Run: `\.venv\Scripts\python.exe -c "from quant_lab.main import create_app; app=create_app(); paths=app.openapi()['paths']; assert '/api/v1/research-cases' in paths; assert not any('order' in p.lower() and 'ai' in p.lower() for p in paths)"`
+Run: `.\.venv\Scripts\python.exe -c "from quant_lab.main import create_app; app=create_app(); paths=app.openapi()['paths']; assert '/api/v1/research-cases' in paths; assert not any('order' in p.lower() and 'ai' in p.lower() for p in paths)"`
 
 Expected: exit 0。
 
-- [ ] **Step 3: 运行完整质量门禁**
+- [x] **Step 3: 运行完整质量门禁**
 
 Run: `powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test.ps1`
 
@@ -588,9 +593,9 @@ Expected:
 - frontend Vitest 0 failures；
 - TypeScript/Vite build exit 0。
 
-- [ ] **Step 4: 检查 migration head 与 diff**
+- [x] **Step 4: 检查 migration head 与 diff**
 
-Run: `\.venv\Scripts\alembic.exe -c backend/alembic.ini heads`
+Run: `.\.venv\Scripts\alembic.exe -c backend/alembic.ini heads`
 
 Expected: 仅一个 head，为本任务执行时确认的 AI-1 revision。
 
@@ -598,16 +603,16 @@ Run: `git diff --check`
 
 Expected: 无输出，exit 0。
 
-- [ ] **Step 5: 最终提交**
+- [x] **Step 5: 最终提交**
 
 ```powershell
 git add README.md ARCHITECTURE.md docs/superpowers/specs/2026-08-27-ai-research-copilot-architecture.md
 git commit -m "docs: record ai provenance foundation"
 ```
 
-## AI-1 完成判定
+## AI-1 完成判定（已满足，仍不自动授权 AI-2）
 
-仅当以下全部成立才可进入 AI-2：
+以下判定已全部满足；依照用户要求，本轮仍在 AI-1 后停止，不进入 AI-2：
 
 - 只有一个 Alembic head；
 - provenance tables 与 ORM 一致；

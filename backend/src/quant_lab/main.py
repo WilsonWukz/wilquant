@@ -3,12 +3,18 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import Engine
+from sqlalchemy.exc import SQLAlchemyError
 
 from quant_lab import __version__
+from quant_lab.ai.cases import ResearchCaseService
+from quant_lab.ai.provenance import AIProvenanceService
+from quant_lab.ai.repository import AIRepository
+from quant_lab.api.ai_research import router as ai_research_router
 from quant_lab.api.backtests import router as backtests_router
 from quant_lab.api.calendars import router as calendars_router
 from quant_lab.api.data_imports import router as data_imports_router
@@ -154,6 +160,22 @@ def create_app(
             app.state.diagnostics,
             app.state.research_repository,
         )
+        try:
+            app.state.ai_repository = AIRepository(owned_engine)
+            app.state.ai_case_service = ResearchCaseService(app.state.ai_repository)
+            app.state.ai_provenance_service = AIProvenanceService(app.state.ai_repository)
+            app.state.ai_provenance_service.recover_incomplete_runs(datetime.now(UTC))
+            app.state.ai_provenance_available = True
+        except SQLAlchemyError:
+            logger.warning(
+                "Optional AI provenance component unavailable",
+                extra={"event": "ai.provenance.unavailable"},
+                exc_info=True,
+            )
+            app.state.ai_repository = None
+            app.state.ai_case_service = None
+            app.state.ai_provenance_service = None
+            app.state.ai_provenance_available = False
         if health_service is None:
             app.state.health_service = HealthService(
                 owned_engine,
@@ -195,6 +217,7 @@ def create_app(
     application.include_router(strategies_router, prefix="/api/v1")
     application.include_router(experiments_router, prefix="/api/v1")
     application.include_router(research_journal_router, prefix="/api/v1")
+    application.include_router(ai_research_router, prefix="/api/v1")
     return application
 
 

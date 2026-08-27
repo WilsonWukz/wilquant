@@ -9,6 +9,7 @@ wilquant 是一个覆盖行情数据管理、策略回测、研究分析和 PAPE
 - 管理不可变 StrategyVersion，运行内置策略并持久化回测结果；
 - 比较多次回测，查看诊断结果，生成研究报告和研究日志；
 - 使用 PAPER 账户按交易日推进策略或人工委托，模拟订单、成交、持仓和资金变化；
+- 保存 AI Research Copilot 的案例、Prompt/Model 版本、运行、尝试、Trace、Usage 与最小证据引用 provenance；
 - 通过版本指纹、事务、幂等请求和追加式审计保存完整运行轨迹。
 
 ## 核心工作流
@@ -64,6 +65,16 @@ Intent → RiskDecision → PaperOrder → PaperFill
 - 保存研究报告及追加式研究日志；
 - 所有研究结果都引用原始数据、策略和回测版本。
 
+### AI provenance foundation
+
+- 冻结 ResearchCase 的 market/instrument/cutoff 与行情、日历、市场规则版本指纹；
+- 发布不可变 PromptTemplateVersion 与 provider-neutral ModelConfigVersion；
+- 记录 AIAnalysisRun、AIAnalysisAttempt、AnalysisTrace、AIUsage 和最小 EvidenceRef；
+- 使用 canonical SHA-256、数据库约束和 triggers 保护身份、终态与 append-only 记录；
+- AI 组件不可用不影响 Data、Backtest、PAPER 或系统 readiness。
+
+当前尚未安装 LLM SDK，也没有 Provider Host、模型调用、AI 诊断/建议、Copilot 对话、案例检索或 AI UI。
+
 ### PAPER 模拟执行
 
 - 创建 PAPER 账户、版本化 RiskPolicy 和可恢复的 PaperSession；
@@ -103,7 +114,7 @@ $env:QUANT_LAB_PROJECT_ROOT = (Get-Location).Path
 .\.venv\Scripts\alembic.exe -c backend/alembic.ini upgrade head
 ```
 
-当前 Alembic head 为 `20260722_0013`，可以安全地重复执行 `upgrade head`。
+当前 Alembic head 为 `20260827_0014`，可以安全地重复执行 `upgrade head`。
 
 ### 启动
 
@@ -168,6 +179,7 @@ FastAPI
     ├── MarketData Domain
     ├── Strategy / Backtest Domain
     ├── Research Domain
+    ├── AI Provenance Domain
     ├── Shared ExecutionKernel
     └── Paper Domain
         ↓                    ↓
@@ -192,6 +204,7 @@ backend/src/quant_lab/
     execution/      确定性执行内核
     backtest/       策略库与回测引擎
     research/       实验、诊断、报告和日志
+    ai/             AI 案例、配置版本、运行、尝试、Trace、Usage 与证据 provenance
     paper/          PAPER 会话、风控、订单、持仓和账务
     api/            FastAPI 路由与 HTTP 契约
 backend/alembic/    SQLite 迁移
@@ -224,4 +237,4 @@ npm.cmd run build
 
 ## 当前支持范围
 
-wilquant 当前提供数据管理、策略回测、研究分析和 PAPER 模拟执行。PAPER 使用模拟资金和本地行情推进，不会向外部交易通道提交订单。
+wilquant 当前提供数据管理、策略回测、研究分析、AI provenance foundation 和 PAPER 模拟执行。AI provenance 不调用模型，PAPER 使用模拟资金和本地行情推进，系统不会向外部交易通道提交订单。

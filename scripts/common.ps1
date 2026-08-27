@@ -37,6 +37,42 @@ function Invoke-ProjectCommand {
     }
 }
 
+function Remove-ProjectTestTempDirectory {
+    param([Parameter(Mandatory)][string]$Path)
+
+    $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd(
+        [System.IO.Path]::DirectorySeparatorChar,
+        [System.IO.Path]::AltDirectorySeparatorChar
+    )
+    $targetPath = [System.IO.Path]::GetFullPath($Path).TrimEnd(
+        [System.IO.Path]::DirectorySeparatorChar,
+        [System.IO.Path]::AltDirectorySeparatorChar
+    )
+    $targetParent = [System.IO.Path]::GetDirectoryName($targetPath)
+    $targetName = [System.IO.Path]::GetFileName($targetPath)
+    $isDirectTempChild = [string]::Equals(
+        $targetParent,
+        $tempRoot,
+        [System.StringComparison]::OrdinalIgnoreCase
+    )
+    $hasExpectedPrefix = $targetName.StartsWith(
+        'quant-lab-pytest-',
+        [System.StringComparison]::OrdinalIgnoreCase
+    )
+    if (-not $isDirectTempChild -or -not $hasExpectedPrefix) {
+        throw "Refusing to remove an unsafe pytest temp directory: $targetPath"
+    }
+
+    if (-not (Test-Path -LiteralPath $targetPath)) {
+        return
+    }
+    $targetItem = Get-Item -LiteralPath $targetPath -Force
+    if (($targetItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Refusing to remove a pytest temp reparse point: $targetPath"
+    }
+    Remove-Item -LiteralPath $targetPath -Recurse -Force
+}
+
 function Test-ProjectPortAvailable {
     param([Parameter(Mandatory)][int]$Port)
 

@@ -1,13 +1,13 @@
 # ADR-0003：AI Research Copilot 信任与推理边界
 
-- 状态：已批准；仅批准架构边界，不授权实现
+- 状态：已批准；AI-1 Provenance Foundation 已实施
 - 日期：2026-08-27
 - 决策范围：研究 AI 的证据、推理、权限、provider 隔离、记忆与动作边界
 - 前置决策：ADR-0002 ExecutionGateway 与 Multi-Market 执行边界
 
 ## 背景
 
-wilquant 已具备不可变行情与策略版本、回测、实验比较、诊断、研究报告、PAPER 确定性执行，以及 Phase 6A 设计的多市场与真实资金安全边界。当前没有 LLM runtime、AI provider、AI secret、AI provenance 或 Copilot。
+wilquant 已具备不可变行情与策略版本、回测、实验比较、诊断、研究报告、PAPER 确定性执行，以及 Phase 6A 设计的多市场与真实资金安全边界。AI-1 已加入无模型 provenance foundation；当前仍没有 LLM runtime、AI provider、AI secret 或 Copilot。
 
 PA_Agent 展示了两阶段诊断/决策、校验重试、分析记录、增量分析、经验案例和分析后追问等有价值的产品模式。但它使用 AGPL-3.0-or-later，并且其领域语言、Prompt、决策树、文件记录和单机 GUI 结构不适合作为 wilquant 的实现基础。
 
@@ -24,7 +24,7 @@ wilquant Core
   ResearchCase / temporal cutoff
   EvidencePack / EvidenceRef
   Prompt + model config versions
-  AIAnalysisRun / Attempt / Trace / Usage
+  AIAnalysisRun / AIAnalysisAttempt / Trace / Usage
   deterministic validators + ResearchGate
   thesis / cases / conversation / drafts
              |
@@ -89,7 +89,7 @@ Recommendation 中 stance/confidence 只描述研究判断。confidence 是 ordi
 - semantic 只允许严格受限的一次修复；
 - grounding 默认不自动重试；
 - temporal leak、immutable fact drift 和 unauthorized action 永不重试当前 run；
-- 每次调用追加 AIModelAttempt，绝不覆盖原响应；
+- 每次调用追加 AIAnalysisAttempt，绝不覆盖原响应；
 - retry 不能改变 ResearchCase、EvidencePack、PromptTemplateVersion 或 ModelConfigVersion。
 
 ### 决策五：全链 provenance 与 append-only
@@ -111,7 +111,7 @@ append-only AnalysisTrace
 
 accepted diagnosis/recommendation、attempt、trace、evidence、thesis revision、conversation turn 和 usage 必须 append-only。现有可编辑 ResearchJournal 不作为 AI 审计事实来源。
 
-### 决策六：推理进程与密钥隔离
+### 决策六：推理进程、transport 与密钥隔离
 
 真实 provider SDK 仅装载在独立 AI Provider Host。Host：
 
@@ -123,6 +123,8 @@ accepted diagnosis/recommendation、attempt、trace、evidence、thesis revision
 - 崩溃只使 AI run 失败。
 
 AI secret 首选 Windows Credential Manager，DPAPI 文件仅作经测试 fallback。Core/Frontend/SQLite 只保存 `secret_ref` 和 configured 状态，不保存明文。
+
+AI-3 的首个真实 adapter 为通用 `OpenAICompatibleProvider`，第一个真实验收 endpoint 优先使用 DeepSeek 官方/兼容接口，但领域层不出现厂商条件分支。Provider Host 使用独立的 127.0.0.1 HTTP/JSON、随机短期 secret、protocol version、request ID、timestamp/replay protection；绝不复用 Gateway process、port、bearer token、credential namespace 或 crash/kill state。当前不采用 Windows named pipe。
 
 ### 决策七：仅允许研究草稿
 
@@ -151,7 +153,17 @@ Copilot conversation 必须锚定 ResearchCase、AIAnalysisRun、Experiment、Ba
 
 ResearchThesis 使用稳定 identity 与 append-only revision。TradeThesis 只解释 WHY；它不是 Intent、RiskDecision、CapitalAuthorization 或 Approval。
 
-### 决策九：AI 与 LIVE 双轨
+ResearchJournal 与 ResearchThesis 保持分离：AI 只能生成 JournalDraft/ThesisRevisionDraft，用户确认后追加，不能改写历史内容。
+
+### 决策九：Raw、retrieval、freshness 与 budget
+
+- Raw content 是独立 artifact，可由用户删除内容但必须保留 hash/provenance 并追加 tombstone；reasoning 默认不保留；
+- AI-2 retrieval 固定先 hard filters，再 structured score + SQLite FTS，不做 embedding；
+- realtime research 等待 6B，先定义 `IMMUTABLE_HISTORICAL/EOD/DELAYED/REALTIME` freshness class；
+- AI budget 同时有 soft warning 与 hard limit，AI-1 只记录 usage/cost provenance，AI-3 才执行 provider-call 前 hard stop；
+- Raw UI 默认不显示 reasoning，Raw 和 reasoning 分两次显式展开并始终脱敏。
+
+### 决策十：AI 与 LIVE 双轨
 
 AI-1～AI-8 与 Phase 6B～6G 是独立路线。AI 可以消费稳定的 multi-market read-only contracts，但：
 
@@ -217,9 +229,9 @@ AI-8 Final AI Acceptance
 
 ## 本 ADR 不授权
 
-- 不授权本轮新增代码、migration、依赖、目录或 secret；
+- 不授权超出已验收 AI-1 范围的代码、migration、依赖、目录或 secret；
 - 不授权任何模型或 provider 网络调用；
 - 不授权读取 PA_Agent 源码进入 wilquant；
 - 不授权任何 PAPER/LIVE/Broker 行为；
-- 不授权进入 AI-1；
+- 只授权进入 AI-1 Provenance Foundation；AI-1 完成后停止，不授权自动进入 AI-2；
 - 不授权用 AI confidence、stance 或 thesis 影响资本、风控或执行。

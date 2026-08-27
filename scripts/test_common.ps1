@@ -38,6 +38,26 @@ try {
         throw 'Absolute runtime-root log directory was not applied'
     }
 
+    $pytestTempDirectory = Join-Path (
+        [System.IO.Path]::GetTempPath()
+    ) "quant-lab-pytest-common-$PID-$([guid]::NewGuid().ToString('N'))"
+    New-Item -ItemType Directory -Force -Path $pytestTempDirectory | Out-Null
+    Set-Content -LiteralPath (Join-Path $pytestTempDirectory 'sentinel.txt') -Value 'temporary' -Encoding ascii
+    Remove-ProjectTestTempDirectory -Path $pytestTempDirectory
+    if (Test-Path -LiteralPath $pytestTempDirectory) {
+        throw 'Pytest temp directory cleanup did not remove the approved directory'
+    }
+
+    $unsafeCleanupRejected = $false
+    try {
+        Remove-ProjectTestTempDirectory -Path $runtimeTestRoot
+    } catch {
+        $unsafeCleanupRejected = $true
+    }
+    if (-not $unsafeCleanupRejected) {
+        throw 'Pytest temp directory cleanup accepted a path without the required prefix'
+    }
+
     $relativeRuntimeRoot = "runtime-test-$PID"
     $env:QUANT_LAB_RUNTIME_ROOT = $relativeRuntimeRoot
     . (Join-Path $PSScriptRoot 'common.ps1')
