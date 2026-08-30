@@ -220,18 +220,20 @@ AI-1～AI-8 与 Phase 6B～6G 是独立路线。AI 可以消费稳定的 multi-m
 AI-1 Provenance Foundation
 AI-2 Evidence + Temporal Cases
 AI-3 Provider Host + Fake/First Provider
-AI-4 Two Stage + Six-Layer Validation
-AI-5 Thesis + Hybrid Case Memory
+AI-4 Two Stage Diagnosis + Recommendation
+AI-5 Thesis + Incremental Case Memory
 AI-6 Context Copilot + Confirmed Drafts
 AI-7 Research Copilot UI
 AI-8 Final AI Acceptance
 ```
 
+AI-2 将六层 deterministic validation、ResearchGate 与 `hard filters -> structured score -> SQLite FTS -> deterministic rank` 提前到 Provider 之前完成。`ResearchCaseDocument` 是 durable retrieval input，FTS 是可重建 derived index，`RetrievalSnapshot` 是 durable result；FTS rowid 或内部 bm25 状态不构成 provenance。
+
 ## 本 ADR 不授权
 
-- 不授权超出已验收 AI-1 范围的代码、migration、依赖、目录或 secret；
+- 不授权超出已验收 AI-2 范围的代码、migration、依赖、目录或 secret；
 - 不授权任何模型或 provider 网络调用；
 - 不授权读取 PA_Agent 源码进入 wilquant；
 - 不授权任何 PAPER/LIVE/Broker 行为；
-- 只授权进入 AI-1 Provenance Foundation；AI-1 完成后停止，不授权自动进入 AI-2；
+- 只授权进入 AI-2 Evidence & Temporal Validation；AI-2 完成后停止，不授权自动进入 AI-3；
 - 不授权用 AI confidence、stance 或 thesis 影响资本、风控或执行。
