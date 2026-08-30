@@ -14,6 +14,7 @@ from quant_lab.db.sqlite import create_sqlite_engine
 
 REVISION_0013 = "20260722_0013"
 REVISION_0014 = "20260827_0014"
+REVISION_HEAD = "20260830_0015"
 AI_TABLES = {
     "ai_prompt_template_versions",
     "ai_model_config_versions",
@@ -89,7 +90,7 @@ def _seed_provenance(engine) -> None:
 
 def test_alembic_has_single_ai_provenance_head() -> None:
     heads = ScriptDirectory.from_config(Config("backend/alembic.ini")).get_heads()
-    assert heads == [REVISION_0014]
+    assert heads == [REVISION_HEAD]
 
 
 def test_empty_database_upgrades_to_ai_provenance_tables(
@@ -99,7 +100,7 @@ def test_empty_database_upgrades_to_ai_provenance_tables(
     assert AI_TABLES.issubset(set(inspect(engine).get_table_names()))
     with engine.connect() as connection:
         version = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-        assert version == REVISION_0014
+        assert version == REVISION_HEAD
     engine.dispose()
 
 

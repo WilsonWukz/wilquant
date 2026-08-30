@@ -203,3 +203,84 @@ class AIUsageLedgerModel(Base):
     currency: Mapped[str] = mapped_column(String(8), nullable=False)
     is_estimate: Mapped[bool] = mapped_column(nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AIEvidencePackModel(Base):
+    __tablename__ = "ai_evidence_packs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    case_id: Mapped[str] = mapped_column(
+        ForeignKey("ai_research_cases.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    temporal_context_json: Mapped[str] = mapped_column(Text, nullable=False)
+    evidence_context_json: Mapped[str] = mapped_column(Text, nullable=False)
+    requirements_json: Mapped[str] = mapped_column(Text, nullable=False)
+    items_json: Mapped[str] = mapped_column(Text, nullable=False)
+    policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AIValidationResultModel(Base):
+    __tablename__ = "ai_validation_results"
+    __table_args__ = (
+        CheckConstraint(
+            "disposition IN ('ACCEPTED','REJECTED')",
+            name="ck_ai_validation_results_disposition",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("ai_analysis_runs.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    attempt_id: Mapped[str] = mapped_column(
+        ForeignKey("ai_analysis_attempts.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    evidence_pack_id: Mapped[str] = mapped_column(
+        ForeignKey("ai_evidence_packs.id", ondelete="RESTRICT"), nullable=False
+    )
+    disposition: Mapped[str] = mapped_column(String(32), nullable=False)
+    findings_json: Mapped[str] = mapped_column(Text, nullable=False)
+    accepted_assertions_json: Mapped[str] = mapped_column(Text, nullable=False)
+    observations_json: Mapped[str] = mapped_column(Text, nullable=False)
+    candidate_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AIResearchCaseDocumentModel(Base):
+    __tablename__ = "ai_research_case_documents"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    case_id: Mapped[str] = mapped_column(
+        ForeignKey("ai_research_cases.id", ondelete="RESTRICT"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    diagnosis: Mapped[str] = mapped_column(Text, nullable=False)
+    success_factors_json: Mapped[str] = mapped_column(Text, nullable=False)
+    failure_factors_json: Mapped[str] = mapped_column(Text, nullable=False)
+    regime_labels_json: Mapped[str] = mapped_column(Text, nullable=False)
+    safe_tags_json: Mapped[str] = mapped_column(Text, nullable=False)
+    universe_json: Mapped[str] = mapped_column(Text, nullable=False)
+    strategy_family: Mapped[str | None] = mapped_column(String(100))
+    market_rules_version: Mapped[str | None] = mapped_column(String(100))
+    document_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AIRetrievalSnapshotModel(Base):
+    __tablename__ = "ai_retrieval_snapshots"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    query_json: Mapped[str] = mapped_column(Text, nullable=False)
+    policy_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    candidates_json: Mapped[str] = mapped_column(Text, nullable=False)
+    exclusions_json: Mapped[str] = mapped_column(Text, nullable=False)
+    fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

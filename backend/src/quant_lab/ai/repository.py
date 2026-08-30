@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from sqlalchemy import func, select
+import json
+
+from sqlalchemy import func, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
@@ -8,11 +10,15 @@ from quant_lab.ai.persistence import (
     AIAnalysisAttemptModel,
     AIAnalysisRunModel,
     AIAnalysisTraceEventModel,
+    AIEvidencePackModel,
     AIEvidenceRefModel,
     AIModelConfigVersionModel,
     AIPromptTemplateVersionModel,
+    AIResearchCaseDocumentModel,
     AIResearchCaseModel,
+    AIRetrievalSnapshotModel,
     AIUsageLedgerModel,
+    AIValidationResultModel,
 )
 
 
@@ -267,3 +273,201 @@ class AIRepository:
             for model in models:
                 session.expunge(model)
             return models
+
+    def find_evidence_pack_by_fingerprint(self, fingerprint: str) -> AIEvidencePackModel | None:
+        with Session(self.engine) as session:
+            model = session.scalar(
+                select(AIEvidencePackModel).where(AIEvidencePackModel.fingerprint == fingerprint)
+            )
+            if model is not None:
+                session.expunge(model)
+            return model
+
+    def add_evidence_pack(self, model: AIEvidencePackModel) -> AIEvidencePackModel:
+        with Session(self.engine) as session:
+            session.add(model)
+            session.commit()
+            session.refresh(model)
+            session.expunge(model)
+            return model
+
+    def get_evidence_pack(self, model_id: str) -> AIEvidencePackModel | None:
+        with Session(self.engine) as session:
+            model = session.get(AIEvidencePackModel, model_id)
+            if model is not None:
+                session.expunge(model)
+            return model
+
+    def add_validation_result(self, model: AIValidationResultModel) -> AIValidationResultModel:
+        with Session(self.engine) as session:
+            session.add(model)
+            session.commit()
+            session.refresh(model)
+            session.expunge(model)
+            return model
+
+    def get_validation_result(self, model_id: str) -> AIValidationResultModel | None:
+        with Session(self.engine) as session:
+            model = session.get(AIValidationResultModel, model_id)
+            if model is not None:
+                session.expunge(model)
+            return model
+
+    def list_validation_results(self, run_id: str) -> tuple[AIValidationResultModel, ...]:
+        with Session(self.engine) as session:
+            models = tuple(
+                session.scalars(
+                    select(AIValidationResultModel)
+                    .where(AIValidationResultModel.run_id == run_id)
+                    .order_by(AIValidationResultModel.created_at, AIValidationResultModel.id)
+                )
+            )
+            for model in models:
+                session.expunge(model)
+            return models
+
+    @staticmethod
+    def _fts_values(model: AIResearchCaseDocumentModel) -> dict[str, str]:
+        success = json.loads(model.success_factors_json)
+        failure = json.loads(model.failure_factors_json)
+        regimes = json.loads(model.regime_labels_json)
+        tags = json.loads(model.safe_tags_json)
+        return {
+            "document_id": model.id,
+            "case_id": model.case_id,
+            "title": model.title,
+            "summary": model.summary,
+            "diagnosis": model.diagnosis,
+            "factors": " ".join(str(value) for value in [*success, *failure]),
+            "labels_tags": " ".join(str(value) for value in [*regimes, *tags]),
+        }
+
+    def add_research_case_document(
+        self, model: AIResearchCaseDocumentModel
+    ) -> AIResearchCaseDocumentModel:
+        with Session(self.engine) as session:
+            session.add(model)
+            session.flush()
+            session.execute(
+                text(
+                    "INSERT INTO ai_research_case_fts "
+                    "(document_id,case_id,title,summary,diagnosis,factors,labels_tags) "
+                    "VALUES (:document_id,:case_id,:title,:summary,:diagnosis,"
+                    ":factors,:labels_tags)"
+                ),
+                self._fts_values(model),
+            )
+            session.commit()
+            session.refresh(model)
+            session.expunge(model)
+            return model
+
+    def get_research_case_document(self, model_id: str) -> AIResearchCaseDocumentModel | None:
+        with Session(self.engine) as session:
+            model = session.get(AIResearchCaseDocumentModel, model_id)
+            if model is not None:
+                session.expunge(model)
+            return model
+
+    def get_research_case_document_by_case_id(
+        self, case_id: str
+    ) -> AIResearchCaseDocumentModel | None:
+        with Session(self.engine) as session:
+            model = session.scalar(
+                select(AIResearchCaseDocumentModel).where(
+                    AIResearchCaseDocumentModel.case_id == case_id
+                )
+            )
+            if model is not None:
+                session.expunge(model)
+            return model
+
+    def list_research_case_documents(self) -> tuple[AIResearchCaseDocumentModel, ...]:
+        with Session(self.engine) as session:
+            models = tuple(
+                session.scalars(
+                    select(AIResearchCaseDocumentModel).order_by(
+                        AIResearchCaseDocumentModel.created_at,
+                        AIResearchCaseDocumentModel.id,
+                    )
+                )
+            )
+            for model in models:
+                session.expunge(model)
+            return models
+
+    def list_research_case_documents_with_cases(
+        self,
+    ) -> tuple[tuple[AIResearchCaseDocumentModel, AIResearchCaseModel], ...]:
+        with Session(self.engine) as session:
+            rows = tuple(
+                session.execute(
+                    select(AIResearchCaseDocumentModel, AIResearchCaseModel)
+                    .join(
+                        AIResearchCaseModel,
+                        AIResearchCaseModel.id == AIResearchCaseDocumentModel.case_id,
+                    )
+                    .order_by(AIResearchCaseDocumentModel.id)
+                ).all()
+            )
+            for document, case in rows:
+                session.expunge(document)
+                session.expunge(case)
+            return tuple((row[0], row[1]) for row in rows)
+
+    def search_research_case_fts(self, match_query: str) -> tuple[str, ...]:
+        with self.engine.connect() as connection:
+            rows = connection.execute(
+                text(
+                    "SELECT document_id FROM ai_research_case_fts "
+                    "WHERE ai_research_case_fts MATCH :query"
+                ),
+                {"query": match_query},
+            )
+            return tuple(str(row[0]) for row in rows)
+
+    def rebuild_research_case_fts(self) -> int:
+        documents = self.list_research_case_documents()
+        with self.engine.begin() as connection:
+            connection.execute(text("DELETE FROM ai_research_case_fts"))
+            for model in documents:
+                connection.execute(
+                    text(
+                        "INSERT INTO ai_research_case_fts "
+                        "(document_id,case_id,title,summary,diagnosis,factors,labels_tags) "
+                        "VALUES (:document_id,:case_id,:title,:summary,:diagnosis,"
+                        ":factors,:labels_tags)"
+                    ),
+                    self._fts_values(model),
+                )
+        return len(documents)
+
+    def find_retrieval_snapshot_by_fingerprint(
+        self, fingerprint: str
+    ) -> AIRetrievalSnapshotModel | None:
+        with Session(self.engine) as session:
+            model = session.scalar(
+                select(AIRetrievalSnapshotModel).where(
+                    AIRetrievalSnapshotModel.fingerprint == fingerprint
+                )
+            )
+            if model is not None:
+                session.expunge(model)
+            return model
+
+    def add_retrieval_snapshot(
+        self, model: AIRetrievalSnapshotModel
+    ) -> AIRetrievalSnapshotModel:
+        with Session(self.engine) as session:
+            session.add(model)
+            session.commit()
+            session.refresh(model)
+            session.expunge(model)
+            return model
+
+    def get_retrieval_snapshot(self, model_id: str) -> AIRetrievalSnapshotModel | None:
+        with Session(self.engine) as session:
+            model = session.get(AIRetrievalSnapshotModel, model_id)
+            if model is not None:
+                session.expunge(model)
+            return model
