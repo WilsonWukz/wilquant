@@ -10,10 +10,13 @@ from quant_lab.ai.configuration import AIProvenanceError
 from quant_lab.api.ai_research_schemas import (
     AIAnalysisRunCreate,
     AIAnalysisRunResponse,
+    AIEvidencePackResponse,
+    AIRetrievalSnapshotResponse,
     AITraceEventResponse,
     AITraceListResponse,
     AIUsageListResponse,
     AIUsageResponse,
+    AIValidationResultResponse,
     ResearchCaseCreate,
     ResearchCaseResponse,
 )
@@ -27,6 +30,9 @@ def _error(error: AIProvenanceError) -> JSONResponse:
         "AI_RUN_NOT_FOUND": status.HTTP_404_NOT_FOUND,
         "AI_PROMPT_VERSION_NOT_FOUND": status.HTTP_404_NOT_FOUND,
         "AI_MODEL_CONFIG_NOT_FOUND": status.HTTP_404_NOT_FOUND,
+        "AI_EVIDENCE_PACK_NOT_FOUND": status.HTTP_404_NOT_FOUND,
+        "AI_VALIDATION_RESULT_NOT_FOUND": status.HTTP_404_NOT_FOUND,
+        "AI_RETRIEVAL_SNAPSHOT_NOT_FOUND": status.HTTP_404_NOT_FOUND,
         "AI_PROVENANCE_UNAVAILABLE": status.HTTP_503_SERVICE_UNAVAILABLE,
     }.get(error.category, status.HTTP_400_BAD_REQUEST)
     return JSONResponse(
@@ -207,6 +213,84 @@ def get_analysis_usage(request: Request, run_id: str):
                 )
                 for item in service.list_usage(run_id)
             )
+        )
+    except AIProvenanceError as error:
+        return _error(error)
+
+
+@router.get("/ai/evidence-packs/{pack_id}", response_model=AIEvidencePackResponse)
+def get_evidence_pack(request: Request, pack_id: str):
+    try:
+        repository = _require_service(request, "ai_repository")
+        model = repository.get_evidence_pack(pack_id)
+        if model is None:
+            raise AIProvenanceError(
+                "AI_EVIDENCE_PACK_NOT_FOUND", "EvidencePack 不存在"
+            )
+        return AIEvidencePackResponse(
+            id=model.id,
+            case_id=model.case_id,
+            temporal_context=json.loads(model.temporal_context_json),
+            evidence_context=json.loads(model.evidence_context_json),
+            requirements=json.loads(model.requirements_json),
+            items=tuple(json.loads(model.items_json)),
+            policy_version=model.policy_version,
+            fingerprint=model.fingerprint,
+            created_at=model.created_at,
+        )
+    except AIProvenanceError as error:
+        return _error(error)
+
+
+@router.get(
+    "/ai/validation-results/{result_id}", response_model=AIValidationResultResponse
+)
+def get_validation_result(request: Request, result_id: str):
+    try:
+        repository = _require_service(request, "ai_repository")
+        model = repository.get_validation_result(result_id)
+        if model is None:
+            raise AIProvenanceError(
+                "AI_VALIDATION_RESULT_NOT_FOUND", "ValidationResult 不存在"
+            )
+        return AIValidationResultResponse(
+            id=model.id,
+            run_id=model.run_id,
+            attempt_id=model.attempt_id,
+            evidence_pack_id=model.evidence_pack_id,
+            disposition=model.disposition,
+            findings=tuple(json.loads(model.findings_json)),
+            accepted_assertions=tuple(json.loads(model.accepted_assertions_json)),
+            observations=tuple(json.loads(model.observations_json)),
+            candidate_fingerprint=model.candidate_fingerprint,
+            policy_version=model.policy_version,
+            fingerprint=model.fingerprint,
+            created_at=model.created_at,
+        )
+    except AIProvenanceError as error:
+        return _error(error)
+
+
+@router.get(
+    "/ai/retrieval-snapshots/{snapshot_id}",
+    response_model=AIRetrievalSnapshotResponse,
+)
+def get_retrieval_snapshot(request: Request, snapshot_id: str):
+    try:
+        repository = _require_service(request, "ai_repository")
+        model = repository.get_retrieval_snapshot(snapshot_id)
+        if model is None:
+            raise AIProvenanceError(
+                "AI_RETRIEVAL_SNAPSHOT_NOT_FOUND", "RetrievalSnapshot 不存在"
+            )
+        return AIRetrievalSnapshotResponse(
+            id=model.id,
+            query=json.loads(model.query_json),
+            policy_version=model.policy_version,
+            candidates=tuple(json.loads(model.candidates_json)),
+            exclusions=tuple(json.loads(model.exclusions_json)),
+            fingerprint=model.fingerprint,
+            created_at=model.created_at,
         )
     except AIProvenanceError as error:
         return _error(error)

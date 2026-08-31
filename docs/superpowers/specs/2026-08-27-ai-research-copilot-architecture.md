@@ -1,6 +1,6 @@
 # wilquant AI Research Copilot 架构设计
 
-- 状态：已设计；AI-1 已实现，AI-2 Evidence & Temporal Validation 已批准实施
+- 状态：已设计；AI-1 与 AI-2 已稳定，停止在 AI-3 之前
 - 日期：2026-08-27
 - 范围：AI 研究分析、证据追溯、案例记忆、研究论点、上下文 Copilot 与草稿动作
 - 前置边界：Phase 5 PAPER、Phase 6A LIVE + Multi-Market Architecture、ADR-0002
@@ -63,7 +63,7 @@ Core 掌握事实、时间截断、Prompt 版本、输入输出指纹、校验�
 
 ## 2. AI-1 / AI-2 实施边界
 
-AI-1 Provenance Foundation 已完成。当前只实施 AI-2 Evidence, Grounding & Temporal Validation：
+AI-1 Provenance Foundation 与 AI-2 Evidence, Grounding & Temporal Validation 已按批准边界实现并通过完整质量门：
 
 - 允许新增显式 EvidenceResolver、EvidencePack、ValidationResult、ResearchCaseDocument、RetrievalSnapshot、FTS5 derived index、deterministic validators 与 ResearchGate；
 - 不安装 LLM SDK；
@@ -72,7 +72,7 @@ AI-1 Provenance Foundation 已完成。当前只实施 AI-2 Evidence, Grounding 
 - 不修改 Phase 6A 的 LIVE state machine、ExecutionGateway、BrokerAdapter 或 Capital Authorization；
 - 不实现 Provider Host、模型调用、chat、recommendation execution 或 UI；
 - 不实现 embedding、跨市场检索或 PAPER/LIVE 写操作；
-- 完成后停止，不进入 AI-3。
+- 已停止，不进入 AI-3。
 
 AI-2 详细合同见 `2026-08-30-ai-2-evidence-temporal-validation-design.md`。AI-3～AI-8 仍是后续独立实现草案。
 
@@ -786,24 +786,24 @@ AI health 不能成为 `/health/ready` 对 Data/Backtest/PAPER/LIVE 的必需条
 
 ## 20. Schema 状态
 
-AI-1 已执行 migration `20260827_0014`；AI-2 表将在其线性后继 migration 中实现：
+AI-1 migration `20260827_0014` 与 AI-2 线性后继 `20260830_0015` 已实现：
 
 | 表/聚合 | 关键用途 | 可变性 | 状态 |
 |---|---|---|---|
 | `ai_model_config_versions` | provider/model 参数 provenance | immutable | AI-1 implemented |
 | `ai_prompt_template_versions` | Prompt 与变量契约 | immutable | AI-1 implemented |
 | `ai_research_cases` | 时间截断根输入 | immutable | AI-1 implemented |
-| `ai_evidence_packs` | case 的证据集合与 fingerprint | append-only | AI-2 approved |
+| `ai_evidence_packs` | case 的证据集合与 fingerprint | append-only | AI-2 implemented |
 | `ai_evidence_refs` | 可验证证据引用 | immutable | AI-1 minimal implemented |
 | `ai_analysis_runs` | run 状态与 provenance | 状态受控，终态 immutable | AI-1 implemented |
 | `ai_analysis_attempts` | 每次 provider call | 一次终态收敛后 immutable | AI-1 implemented |
 | `ai_analysis_trace_events` | 分析事件 | append-only | AI-1 implemented |
-| `ai_validation_results` | 六层校验、gate 与 retry consistency provenance | append-only | AI-2 approved |
-| `ai_research_case_documents` | canonical durable retrieval input | append-only | AI-2 approved |
-| `ai_research_case_fts` | 从 case documents 重建的 FTS5 索引 | derived/disposable | AI-2 approved |
+| `ai_validation_results` | 六层校验、gate 与 retry consistency provenance | append-only | AI-2 implemented |
+| `ai_research_case_documents` | canonical durable retrieval input | append-only | AI-2 implemented |
+| `ai_research_case_fts` | 从 case documents 重建的 FTS5 索引 | derived/disposable | AI-2 implemented |
 | `research_diagnoses` | Stage 1 accepted result | immutable | AI-4 planned |
 | `research_recommendations` | Stage 2 accepted result | immutable | AI-4 planned |
-| `ai_retrieval_snapshots` | 候选、文档 fingerprint 与业务级排名分解 | append-only | AI-2 approved |
+| `ai_retrieval_snapshots` | 候选、文档 fingerprint 与业务级排名分解 | append-only | AI-2 implemented |
 | `research_theses` | 稳定 identity/current projection | 受控 projection | AI-5 planned |
 | `research_thesis_revisions` | thesis 内容 | append-only | AI-5 planned |
 | `copilot_conversations` | 上下文 identity | 受控关闭 | AI-6 planned |
@@ -815,7 +815,7 @@ AI-1 已执行 migration `20260827_0014`；AI-2 表将在其线性后继 migrati
 
 ## 21. API 草案
 
-AI-1 已实现 Case/Run 创建及 Case/Run/Trace/Usage 查询；下列 EvidencePack、cancel、raw、conversation、draft 和 secret API 仍按对应后续阶段实施。
+AI-1 已实现 Case/Run 创建及 Case/Run/Trace/Usage 查询；AI-2 已新增 EvidencePack、ValidationResult、RetrievalSnapshot 的只读查询。resolver、validation mutation、cancel、raw、conversation、draft 和 secret API 仍不开放。
 
 ```text
 POST /api/v1/research-cases
@@ -940,7 +940,7 @@ AI-8 AI Acceptance / Security / Evals
 
 ### AI-2 Evidence & Temporal Foundation
 
-状态：approved for implementation。实现显式 Resolver allowlist、EvidencePack、双 cutoff、structured claims、六层 deterministic validators、ResearchGate、SQLite FTS retrieval、RetrievalSnapshot、CN/US isolation、append-only validation provenance 与 adversarial tests；FTS 只是可重建 derived index。本阶段仍无 Provider。
+状态：stable。已实现显式 Resolver allowlist、EvidencePack、双 cutoff、structured claims、六层 deterministic validators、ResearchGate、SQLite FTS retrieval、RetrievalSnapshot、CN/US isolation、append-only validation provenance、restart recovery 与 adversarial tests，并通过完整 `scripts/test.ps1`；FTS 只是可重建 derived index。本阶段仍无 Provider。
 
 ### AI-3 Provider Isolation
 
@@ -1071,12 +1071,13 @@ AI-1 现在可独立于 6B 开始；AI-1/AI-2/AI-3 基础设施与 Phase 6 并�
 
 ## 32. 完成边界
 
-AI-1 Provenance Foundation 已稳定。架构决策现已授权进入 AI-2：实现 EvidencePack、grounding/temporal/immutable validation、ResearchGate、hard filters + structured score + SQLite FTS retrieval 与不可变 snapshots；不调用 provider、不安装 LLM SDK、不做 chat/UI/recommendation execution。AI-2 完成全量验收后必须停止，不自动进入 AI-3。
+AI-1 Provenance Foundation 已稳定。AI-2 已按授权实现 EvidencePack、grounding/temporal/immutable validation、ResearchGate、hard filters + structured score + SQLite FTS retrieval 与不可变 snapshots，并完成全量验收；未调用 provider、未安装 LLM SDK、未做 chat/UI/recommendation execution。当前已停止，不进入 AI-3。
 
 预期状态：
 
 ```text
 AI RESEARCH COPILOT ARCHITECTURE DESIGNED
 AI-1 PROVENANCE FOUNDATION STABLE
-READY FOR AI-2 EVIDENCE & TEMPORAL VALIDATION
+AI-2 EVIDENCE & TEMPORAL VALIDATION STABLE
+STOP BEFORE AI-3
 ```

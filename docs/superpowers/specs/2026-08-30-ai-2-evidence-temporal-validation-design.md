@@ -1,6 +1,6 @@
 # AI-2 Evidence, Grounding & Temporal Validation Design
 
-**状态：** approved for implementation（2026-08-30）  
+**状态：** implemented and accepted（2026-08-31）
 **基线：** `dev@6cb0b25e61d70afd369172b46209462feace8860`  
 **前置能力：** AI-1 Provenance Foundation，Alembic `20260827_0014`  
 **范围终点：** AI-2 完成后停止，不进入 AI-3 Provider Isolation
@@ -464,7 +464,23 @@ EvidencePack、ValidationResult、ResearchCaseDocument、RetrievalSnapshot 创�
 
 ```text
 AI-2 EVIDENCE & TEMPORAL VALIDATION STABLE
-READY FOR AI-3 PROVIDER ISOLATION
+STOP BEFORE AI-3 PROVIDER ISOLATION
 ```
 
 完成后立即停止，不实现任何 AI-3 内容。
+
+## 19. 实施与验收结果
+
+AI-2 已由 Alembic `20260830_0015` 线性接在 `20260827_0014` 后完成。实现包含四张 append-only 历史表、一个 derived FTS5 virtual table、11 类显式 resolver policy、EvidencePack、六层 validation、ValidationResult recorder、ResearchGate、ResearchCaseDocument、temporal-safe retrieval、RetrievalSnapshot、三个只读 provenance API 与启动时 FTS rebuild。
+
+2026-08-31 完整执行 `scripts/test.ps1`，结果为：
+
+- backend 635 项通过，其中 AI shard 107 项；
+- AI-2 adversarial、migration matrix、append-only、restart recovery 与 FTS rebuild tests 全部通过；
+- Ruff 全仓通过；
+- mypy 检查 111 个源文件无错误；
+- frontend 10 个 test files、48 项测试通过；
+- TypeScript 与 Vite production build 通过；
+- 最终输出 `All backend and frontend checks passed.`。
+
+本轮未安装 Provider SDK、未新增模型调用、未新增 AI UI、未触碰 PAPER/LIVE 写路径，停止在 AI-3 之前。

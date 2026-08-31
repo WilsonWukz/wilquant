@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
+from typing import Protocol
+from uuid import uuid4
 
 from pydantic import ValidationError
 
@@ -24,7 +27,9 @@ from quant_lab.ai.contracts import (
     ValidationResult,
 )
 from quant_lab.ai.fingerprints import fingerprint_payload
+from quant_lab.ai.persistence import AIValidationResultModel
 from quant_lab.ai.policies import AI2_POLICY, AI2Policy
+from quant_lab.market_data.fingerprints import canonical_json_bytes
 
 ALLOWED_ACTION_TYPES = frozenset({"RESEARCH_ANALYSIS", "RESEARCH_DIAGNOSIS"})
 _CLAIM_KEYS = frozenset(
@@ -510,4 +515,73 @@ class ValidationService:
             observations=observations,
             candidate_fingerprint=raw_fingerprint,
             policy_version=self.policy.validation_policy_version,
+        )
+
+
+class ValidationResultRepository(Protocol):
+    def find_validation_result_by_fingerprint(
+        self, fingerprint: str
+    ) -> AIValidationResultModel | None: ...
+
+    def add_validation_result(
+        self, model: AIValidationResultModel
+    ) -> AIValidationResultModel: ...
+
+
+class ValidationResultRecorder:
+    def __init__(
+        self,
+        repository: ValidationResultRepository,
+        *,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    ) -> None:
+        self.repository = repository
+        self.clock = clock
+
+    def record(
+        self,
+        *,
+        run_id: str,
+        attempt_id: str,
+        evidence_pack_id: str,
+        result: ValidationResult,
+    ) -> AIValidationResultModel:
+        payload = {
+            "run_id": run_id,
+            "attempt_id": attempt_id,
+            "evidence_pack_id": evidence_pack_id,
+            "disposition": result.disposition,
+            "findings": [item.model_dump(mode="python") for item in result.findings],
+            "accepted_assertions": [
+                item.model_dump(mode="python") for item in result.accepted_assertions
+            ],
+            "observations": [
+                item.model_dump(mode="python") for item in result.observations
+            ],
+            "candidate_fingerprint": result.candidate_fingerprint,
+            "policy_version": result.policy_version,
+        }
+        fingerprint = fingerprint_payload(payload)
+        existing = self.repository.find_validation_result_by_fingerprint(fingerprint)
+        if existing is not None:
+            return existing
+        return self.repository.add_validation_result(
+            AIValidationResultModel(
+                id=str(uuid4()),
+                run_id=run_id,
+                attempt_id=attempt_id,
+                evidence_pack_id=evidence_pack_id,
+                disposition=result.disposition.value,
+                findings_json=canonical_json_bytes(payload["findings"]).decode("utf-8"),
+                accepted_assertions_json=canonical_json_bytes(
+                    payload["accepted_assertions"]
+                ).decode("utf-8"),
+                observations_json=canonical_json_bytes(payload["observations"]).decode(
+                    "utf-8"
+                ),
+                candidate_fingerprint=result.candidate_fingerprint,
+                policy_version=result.policy_version,
+                fingerprint=fingerprint,
+                created_at=self.clock().astimezone(UTC),
+            )
         )

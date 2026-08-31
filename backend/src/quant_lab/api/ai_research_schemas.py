@@ -115,3 +115,40 @@ class AIUsageResponse(BaseModel):
 
 class AIUsageListResponse(BaseModel):
     items: tuple[AIUsageResponse, ...]
+
+
+class AIEvidencePackResponse(BaseModel):
+    id: str
+    case_id: str
+    temporal_context: dict[str, object]
+    evidence_context: dict[str, object]
+    requirements: dict[str, object]
+    items: tuple[dict[str, object], ...]
+    policy_version: str
+    fingerprint: str
+    created_at: datetime
+
+
+class AIValidationResultResponse(BaseModel):
+    id: str
+    run_id: str
+    attempt_id: str
+    evidence_pack_id: str
+    disposition: str
+    findings: tuple[dict[str, object], ...]
+    accepted_assertions: tuple[dict[str, object], ...]
+    observations: tuple[dict[str, object], ...]
+    candidate_fingerprint: str
+    policy_version: str
+    fingerprint: str
+    created_at: datetime
+
+
+class AIRetrievalSnapshotResponse(BaseModel):
+    id: str
+    query: dict[str, object]
+    policy_version: str
+    candidates: tuple[dict[str, object], ...]
+    exclusions: tuple[dict[str, object], ...]
+    fingerprint: str
+    created_at: datetime

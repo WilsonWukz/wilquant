@@ -1,6 +1,6 @@
 # ADR-0003：AI Research Copilot 信任与推理边界
 
-- 状态：已批准；AI-1 Provenance Foundation 已实施
+- 状态：已批准；AI-1 与 AI-2 已实施并验收
 - 日期：2026-08-27
 - 决策范围：研究 AI 的证据、推理、权限、provider 隔离、记忆与动作边界
 - 前置决策：ADR-0002 ExecutionGateway 与 Multi-Market 执行边界
@@ -228,6 +228,8 @@ AI-8 Final AI Acceptance
 ```
 
 AI-2 将六层 deterministic validation、ResearchGate 与 `hard filters -> structured score -> SQLite FTS -> deterministic rank` 提前到 Provider 之前完成。`ResearchCaseDocument` 是 durable retrieval input，FTS 是可重建 derived index，`RetrievalSnapshot` 是 durable result；FTS rowid 或内部 bm25 状态不构成 provenance。
+
+实施状态：AI-2 已于 2026-08-31 通过 Alembic `20260830_0015`、adversarial tests、restart recovery 与完整 `scripts/test.ps1` 验收。当前停止在 AI-3 之前，本 ADR 不因此授权任何 Provider、模型调用、AI UI 或交易写操作。
 
 ## 本 ADR 不授权
 

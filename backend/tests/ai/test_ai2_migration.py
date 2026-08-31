@@ -35,6 +35,28 @@ def _seed_case_and_ai2_rows(engine) -> None:
     with engine.begin() as connection:
         connection.execute(
             text(
+                "INSERT INTO ai_prompt_template_versions "
+                "(id,template_name,stage,schema_version,content,content_sha256,"
+                "variable_contract_json,variable_contract_sha256,validator_policy_version,"
+                "fingerprint,status,created_by,created_at) VALUES "
+                "('prompt','p','DIAGNOSIS','1','safe',:a,'{}',:b,'v1',:c,'PUBLISHED',"
+                "'USER',CURRENT_TIMESTAMP)"
+            ),
+            {"a": "a" * 64, "b": "b" * 64, "c": "c" * 64},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO ai_model_config_versions "
+                "(id,provider_kind,provider_id,base_url_identity,model_identifier,"
+                "endpoint_profile_id,capabilities_json,parameters_json,fingerprint,"
+                "created_by,created_at) VALUES "
+                "('model','FAKE','fake','local','fake','fake','{}','{}',:f,'USER',"
+                "CURRENT_TIMESTAMP)"
+            ),
+            {"f": "d" * 64},
+        )
+        connection.execute(
+            text(
                 "INSERT INTO ai_research_cases "
                 "(id,purpose,market,exchange,symbol,instrument_id,asset_type,currency,"
                 "timeframe,as_of_utc,market_local_trade_date,bindings_json,fingerprint,"
@@ -47,12 +69,49 @@ def _seed_case_and_ai2_rows(engine) -> None:
         )
         connection.execute(
             text(
+                "INSERT INTO ai_analysis_runs "
+                "(id,case_id,stage,status,prompt_template_version_id,model_config_version_id,"
+                "case_fingerprint,prompt_template_fingerprint,resolved_prompt_fingerprint,"
+                "model_config_fingerprint,validator_policy_version,validator_policy_fingerprint,"
+                "created_at) VALUES "
+                "('run','case-1','DIAGNOSIS','CREATED','prompt','model',:a,:b,:c,:d,'v1',:e,"
+                "CURRENT_TIMESTAMP)"
+            ),
+            {
+                "a": "1" * 64,
+                "b": "c" * 64,
+                "c": "f" * 64,
+                "d": "d" * 64,
+                "e": "7" * 64,
+            },
+        )
+        connection.execute(
+            text(
+                "INSERT INTO ai_analysis_attempts "
+                "(id,run_id,attempt_number,status,input_fingerprint,started_at) "
+                "VALUES ('attempt','run',1,'STARTED',:f,CURRENT_TIMESTAMP)"
+            ),
+            {"f": "8" * 64},
+        )
+        connection.execute(
+            text(
                 "INSERT INTO ai_evidence_packs "
                 "(id,case_id,temporal_context_json,evidence_context_json,requirements_json,"
                 "items_json,policy_version,fingerprint,created_at) VALUES "
                 "('pack-1','case-1','{}','{}','{}','[]','v1',:fp,CURRENT_TIMESTAMP)"
             ),
             {"fp": "2" * 64},
+        )
+        connection.execute(
+            text(
+                "INSERT INTO ai_validation_results "
+                "(id,run_id,attempt_id,evidence_pack_id,disposition,findings_json,"
+                "accepted_assertions_json,observations_json,candidate_fingerprint,"
+                "policy_version,fingerprint,created_at) VALUES "
+                "('validation-1','run','attempt','pack-1','REJECTED','[]','[]','[]',"
+                ":candidate,'v1',:fingerprint,CURRENT_TIMESTAMP)"
+            ),
+            {"candidate": "9" * 64, "fingerprint": "0" * 64},
         )
         connection.execute(
             text(
@@ -115,6 +174,7 @@ def test_history_rows_are_append_only_but_fts_is_disposable(
 
     rows = {
         "ai_evidence_packs": "pack-1",
+        "ai_validation_results": "validation-1",
         "ai_research_case_documents": "doc-1",
         "ai_retrieval_snapshots": "snap-1",
     }

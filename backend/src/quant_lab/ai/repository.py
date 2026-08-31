@@ -306,6 +306,19 @@ class AIRepository:
             session.expunge(model)
             return model
 
+    def find_validation_result_by_fingerprint(
+        self, fingerprint: str
+    ) -> AIValidationResultModel | None:
+        with Session(self.engine) as session:
+            model = session.scalar(
+                select(AIValidationResultModel).where(
+                    AIValidationResultModel.fingerprint == fingerprint
+                )
+            )
+            if model is not None:
+                session.expunge(model)
+            return model
+
     def get_validation_result(self, model_id: str) -> AIValidationResultModel | None:
         with Session(self.engine) as session:
             model = session.get(AIValidationResultModel, model_id)

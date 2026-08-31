@@ -9,7 +9,7 @@ wilquant 是一个覆盖行情数据管理、策略回测、研究分析和 PAPE
 - 管理不可变 StrategyVersion，运行内置策略并持久化回测结果；
 - 比较多次回测，查看诊断结果，生成研究报告和研究日志；
 - 使用 PAPER 账户按交易日推进策略或人工委托，模拟订单、成交、持仓和资金变化；
-- 保存 AI Research Copilot 的案例、Prompt/Model 版本、运行、尝试、Trace、Usage 与最小证据引用 provenance；
+- 冻结 AI Research Copilot 的证据包，执行 grounding、时间截断、事实漂移校验和可审计案例检索；
 - 通过版本指纹、事务、幂等请求和追加式审计保存完整运行轨迹。
 
 ## 核心工作流
@@ -65,15 +65,19 @@ Intent → RiskDecision → PaperOrder → PaperFill
 - 保存研究报告及追加式研究日志；
 - 所有研究结果都引用原始数据、策略和回测版本。
 
-### AI provenance foundation
+### AI 证据与时间安全校验
 
-- 冻结 ResearchCase 的 market/instrument/cutoff 与行情、日历、市场规则版本指纹；
+- 冻结 ResearchCase 的 market/instrument、market-data cutoff、knowledge cutoff 与版本指纹；
+- 通过显式 resolver registry 和字段 allowlist 解析 Dataset、行情快照、策略、回测、研究、PAPER 快照与风控决定；
+- 生成不可变 EvidencePack，并按 Syntax、Schema、Semantic、Grounding、Temporal、Immutable Fact 六层校验结构化 claim；
+- 使用固定优先级 ResearchGate 输出 `REJECT / WAIT_FOR_EVIDENCE / ABSTAIN / PROCEED`；
+- 以 ResearchCaseDocument 作为 durable retrieval input，通过 structured score 与 derived SQLite FTS5 索引生成不可变 RetrievalSnapshot；
 - 发布不可变 PromptTemplateVersion 与 provider-neutral ModelConfigVersion；
-- 记录 AIAnalysisRun、AIAnalysisAttempt、AnalysisTrace、AIUsage 和最小 EvidenceRef；
+- 记录 AIAnalysisRun、AIAnalysisAttempt、AnalysisTrace、AIUsage、EvidenceRef、ValidationResult 与检索快照；
 - 使用 canonical SHA-256、数据库约束和 triggers 保护身份、终态与 append-only 记录；
-- AI 组件不可用不影响 Data、Backtest、PAPER 或系统 readiness。
+- 应用启动时可从 canonical ResearchCaseDocument 重建 FTS；AI 组件不可用不影响 Data、Backtest、PAPER 或系统 readiness。
 
-当前尚未安装 LLM SDK，也没有 Provider Host、模型调用、AI 诊断/建议、Copilot 对话、案例检索或 AI UI。
+当前尚未安装 LLM SDK，也没有 Provider Host、模型调用、Copilot 对话或 AI UI。FTS 是可丢弃并重建的索引，不是 provenance 或 source of truth。
 
 ### PAPER 模拟执行
 
@@ -114,7 +118,7 @@ $env:QUANT_LAB_PROJECT_ROOT = (Get-Location).Path
 .\.venv\Scripts\alembic.exe -c backend/alembic.ini upgrade head
 ```
 
-当前 Alembic head 为 `20260827_0014`，可以安全地重复执行 `upgrade head`。
+当前 Alembic head 为 `20260830_0015`，可以安全地重复执行 `upgrade head`。
 
 ### 启动
 
@@ -179,7 +183,7 @@ FastAPI
     ├── MarketData Domain
     ├── Strategy / Backtest Domain
     ├── Research Domain
-    ├── AI Provenance Domain
+    ├── AI Evidence / Validation / Retrieval Domain
     ├── Shared ExecutionKernel
     └── Paper Domain
         ↓                    ↓
@@ -204,7 +208,7 @@ backend/src/quant_lab/
     execution/      确定性执行内核
     backtest/       策略库与回测引擎
     research/       实验、诊断、报告和日志
-    ai/             AI 案例、配置版本、运行、尝试、Trace、Usage 与证据 provenance
+    ai/             AI 案例、证据包、六层校验、ResearchGate、检索快照与 provenance
     paper/          PAPER 会话、风控、订单、持仓和账务
     api/            FastAPI 路由与 HTTP 契约
 backend/alembic/    SQLite 迁移

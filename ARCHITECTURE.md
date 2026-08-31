@@ -1,10 +1,10 @@
-# WIL_QUANT Architecture
+# wilquant Architecture
 
 ## 架构定位
 
-WIL_QUANT 是面向个人 A 股研究、回测、PAPER 模拟执行和复盘的本地模块化单体。Phase 0–5 的优先级是正确性、资金与状态一致性、可追溯性、可测试性和可解释性。
+wilquant 是覆盖行情数据、策略回测、研究分析、AI 证据校验和 PAPER 模拟执行的本地模块化单体。现有运行能力以 CN A-share 为主，领域合同已为 CN/US 严格隔离的 multi-market 演进保留明确边界。
 
-当前系统没有 Broker、LIVE execution、真实 credential、真实账户、真实资金授权、AI Provider Host 或模型调用。已实现的 AI-1 仅是无模型的 provenance foundation。
+当前系统没有 Broker、LIVE execution、真实 credential、真实账户、真实资金授权、AI Provider Host 或模型调用。AI-1 provenance foundation 与 AI-2 evidence/temporal validation 已实现，仍是无模型确定性 Core。
 
 ## 当前系统边界
 
@@ -17,7 +17,7 @@ FastAPI Modular Monolith
     ├── Strategy Library
     ├── Backtest Domain
     ├── Research Domain
-    ├── AI Provenance Domain
+    ├── AI Evidence / Validation / Retrieval Domain
     ├── Shared ExecutionKernel
     └── Paper Domain
          ├── PaperSession Advance
@@ -43,10 +43,10 @@ SQLite 是控制面和事务状态的事实来源，保存：
 - TradingCalendarVersion、MarketDataProfile 和标的元数据；
 - StrategyDefinition、StrategyVersion、BacktestRun 和结果索引；
 - Research experiment、journal 与报告元数据；
-- AI ResearchCase、EvidenceRef、Prompt/Model config version、AnalysisRun、AnalysisAttempt、Trace 与 Usage；
+- AI ResearchCase、EvidenceRef、EvidencePack、ValidationResult、ResearchCaseDocument、RetrievalSnapshot、Prompt/Model config version、AnalysisRun、AnalysisAttempt、Trace 与 Usage；
 - PaperAccount、RiskPolicyVersion、RiskDecision、Session、Intent、Order、Fill、Position、Lot、Snapshot、Ledger、Audit 和 Advance record。
 
-Alembic 只管理 SQLite schema。Paper 的 RiskDecision、Fill、Ledger、Audit 和 RiskPolicyVersion，以及 AI provenance 的不可变记录、身份字段与终态，由数据库 trigger 保护。
+Alembic 只管理 SQLite schema。Paper 的 RiskDecision、Fill、Ledger、Audit 和 RiskPolicyVersion，以及 AI provenance 的不可变记录、身份字段与终态，由数据库 trigger 保护。`ai_research_case_fts` 是唯一例外：它是可从 `ai_research_case_documents` 重建的 derived index，不是历史事实，也不套用 append-only trigger。
 
 ### Parquet
 
@@ -123,17 +123,24 @@ Research Domain 消费已完成的 BacktestRun 和不可变策略/数据版本�
 
 Research Domain 不修改行情版本、策略版本或执行结果，也不能创建 PaperFill、修改现金或绕过 RiskEngine。
 
-## AI Provenance Domain
+## AI Evidence / Validation / Retrieval Domain
 
-`quant_lab.ai` 是 AI Research Copilot 的无模型控制面基础，只负责：
+`quant_lab.ai` 是 AI Research Copilot 的无模型确定性控制面，负责：
 
 - 冻结 multi-market ResearchCase identity、UTC cutoff 与确定性版本绑定；
-- 注册属于 Case 且不越过 cutoff 的最小 EvidenceRef；
+- 通过显式 registry 和字段 allowlist 把 11 类已批准来源解析为 canonical evidence；
+- 冻结 EvidencePack，并区分 market-data cutoff 与 knowledge cutoff；
+- 按 Syntax、Schema、Semantic、Grounding、Temporal、Immutable Fact 执行六层校验，Core 重算 DELTA/PERCENT_CHANGE；
+- 记录 schema-invalid candidate 中仅用于 retry/forensic 的 `trusted=false` assertion observation；
+- 使用固定优先级 ResearchGate 处理确定性违规、缺失/过期证据和不可回答场景；
+- 以 ResearchCaseDocument 为 durable input，经 hard filters、structured score、FTS 与 stable tie-break 生成不可变 RetrievalSnapshot；
 - 发布不可变 PromptTemplateVersion 与 provider-neutral ModelConfigVersion；
-- 记录 AIAnalysisRun、AIAnalysisAttempt、AnalysisTrace 与 AIUsage；
+- 记录 AIAnalysisRun、AIAnalysisAttempt、AnalysisTrace、AIUsage 与 append-only validation/retrieval provenance；
 - 使用 canonical fingerprint、受控状态转换、append-only triggers 和 restart recovery 保存 provenance。
 
-AI package 不导入 PAPER/LIVE/Gateway/Broker 或 provider network client。当前 API 只允许创建 Case/Run 和读取 Case/Run/Trace/Usage，不暴露 attempt 完成、raw content、provider call 或任何执行操作。AI 数据库不可用时只让这些可选 API 返回安全错误，不改变 SQLite/DuckDB readiness，也不影响现有研究、回测或 PAPER。
+`ResearchCase.created_at` 是 server-generated immutable `known_at`，`as_of_utc` 是 `case_end_at`；描述旧市场的后导入 case 不会进入更早的 historical knowledge context。CN/US 检索严格隔离，MarketRules 只在分析确实依赖交易规则时成为必要证据。
+
+AI package 不导入 PAPER/LIVE/Gateway/Broker 或 provider network client。API 允许创建 Case/Run、读取 Case/Run/Trace/Usage，并只读查询 EvidencePack、ValidationResult 与 RetrievalSnapshot；不暴露 resolver、validation、attempt 完成、raw content、provider call 或任何执行操作。AI 数据库不可用时只让这些可选 API 返回安全错误，不改变 SQLite/DuckDB readiness，也不影响现有研究、回测或 PAPER。
 
 ## Paper Domain
 

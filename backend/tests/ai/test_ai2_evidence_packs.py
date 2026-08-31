@@ -146,3 +146,25 @@ def test_pack_rejects_secret_shaped_field_before_persistence() -> None:
 
     assert raised.value.code == "SECRET_MATERIAL_FORBIDDEN"
     assert repository.models == {}
+
+
+def test_pack_rejects_obvious_secret_value_before_persistence() -> None:
+    repository = _PackRepository()
+    temporal, evidence = _contexts()
+
+    with pytest.raises(EvidencePackError) as raised:
+        EvidencePackService(repository).freeze(
+            case_id="case-1",
+            temporal_context=temporal,
+            evidence_context=evidence,
+            requirements=AnalysisRequirements(),
+            items=(
+                _item(
+                    value="sk-abcdefghijklmnopqrstuvwxyz123456",
+                    value_type="STRING",
+                ),
+            ),
+        )
+
+    assert raised.value.code == "SECRET_MATERIAL_FORBIDDEN"
+    assert repository.models == {}

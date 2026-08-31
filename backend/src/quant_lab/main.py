@@ -162,6 +162,9 @@ def create_app(
         )
         try:
             app.state.ai_repository = AIRepository(owned_engine)
+            app.state.ai_fts_document_count = (
+                app.state.ai_repository.rebuild_research_case_fts()
+            )
             app.state.ai_case_service = ResearchCaseService(app.state.ai_repository)
             app.state.ai_provenance_service = AIProvenanceService(app.state.ai_repository)
             app.state.ai_provenance_service.recover_incomplete_runs(datetime.now(UTC))
@@ -173,6 +176,7 @@ def create_app(
                 exc_info=True,
             )
             app.state.ai_repository = None
+            app.state.ai_fts_document_count = None
             app.state.ai_case_service = None
             app.state.ai_provenance_service = None
             app.state.ai_provenance_available = False

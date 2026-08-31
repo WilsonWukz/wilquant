@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Protocol
 from uuid import uuid4
 
-from quant_lab.ai.configuration import _contains_forbidden_secret_key
+from quant_lab.ai.configuration import contains_forbidden_secret_material
 from quant_lab.ai.contracts import (
     AnalysisRequirements,
     CanonicalEvidenceItem,
@@ -86,7 +86,7 @@ class EvidencePackService:
             raise EvidencePackError("INSTRUMENT_MISMATCH", "evidence instrument mismatch")
         if context.currency is not None and item.currency not in {None, context.currency}:
             raise EvidencePackError("CURRENCY_MISMATCH", "evidence currency mismatch")
-        if _contains_forbidden_secret_key({item.field: item.value}):
+        if contains_forbidden_secret_material({item.field: item.value}):
             raise EvidencePackError(
                 "SECRET_MATERIAL_FORBIDDEN", "evidence contains forbidden secret-shaped field"
             )

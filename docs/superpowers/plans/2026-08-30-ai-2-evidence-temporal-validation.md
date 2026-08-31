@@ -8,6 +8,8 @@
 
 **Tech Stack:** Python 3.12、Pydantic v2、SQLAlchemy 2、Alembic、SQLite/FTS5、FastAPI、pytest、Ruff、mypy、PowerShell。
 
+**Execution Status:** 已于 2026-08-31 按本计划完成并通过 `scripts/test.ps1`；AI-2 stable，停止在 AI-3 之前。
+
 ---
 
 ## 文件职责图

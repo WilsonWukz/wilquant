@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -30,6 +31,11 @@ FORBIDDEN_SECRET_KEY_NAMES = frozenset(
     }
 )
 FORBIDDEN_SECRET_KEY_SUFFIXES = ("apikey", "authorization", "credential", "password", "secret")
+FORBIDDEN_SECRET_TEXT_PATTERNS = (
+    re.compile(r"(?i)\b(?:sk|pk)-[a-z0-9_-]{20,}\b"),
+    re.compile(r"(?i)\bauthorization\s*:\s*bearer\s+\S{12,}"),
+    re.compile(r"(?i)\b(?:api[_-]?key|access[_-]?token)\s*[:=]\s*\S{12,}"),
+)
 
 
 class AIProvenanceError(Exception):
@@ -58,6 +64,18 @@ def _contains_forbidden_secret_key(value: object) -> bool:
         return False
     if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
         return any(_contains_forbidden_secret_key(item) for item in value)
+    return False
+
+
+def contains_forbidden_secret_material(value: object) -> bool:
+    if _contains_forbidden_secret_key(value):
+        return True
+    if isinstance(value, str):
+        return any(pattern.search(value) is not None for pattern in FORBIDDEN_SECRET_TEXT_PATTERNS)
+    if isinstance(value, Mapping):
+        return any(contains_forbidden_secret_material(item) for item in value.values())
+    if isinstance(value, Sequence) and not isinstance(value, str | bytes | bytearray):
+        return any(contains_forbidden_secret_material(item) for item in value)
     return False
 
 

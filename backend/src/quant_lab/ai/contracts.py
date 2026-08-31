@@ -297,3 +297,17 @@ class RetrievalCandidate(BaseModel):
     rank: int
 
     _utc_times = field_validator("case_end_at", "known_at")(_aware_utc)
+
+
+class RetrievalSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    id: str
+    query: RetrievalQuery
+    policy_version: str
+    candidates: tuple[RetrievalCandidate, ...]
+    exclusions: tuple[dict[str, str], ...]
+    fingerprint: str = Field(min_length=64, max_length=64)
+    created_at: datetime
+
+    _utc_created = field_validator("created_at")(_aware_utc)
