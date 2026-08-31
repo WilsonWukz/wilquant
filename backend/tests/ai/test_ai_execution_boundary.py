@@ -10,7 +10,6 @@ pytestmark = pytest.mark.anyio
 
 AI_SOURCE = Path("backend/src/quant_lab/ai")
 FORBIDDEN_IMPORTS = (
-    "quant_lab.paper",
     "quant_lab.live",
     "quant_lab.execution_gateway",
     "quant_lab.brokers",
@@ -19,6 +18,9 @@ FORBIDDEN_IMPORTS = (
     "httpx",
     "requests",
 )
+READ_ONLY_DOMAIN_IMPORTS = {
+    ("source_resolvers.py", "quant_lab.paper.repository"),
+}
 
 
 def _imports(path: Path) -> tuple[str, ...]:
@@ -38,6 +40,10 @@ async def test_ai_package_has_no_execution_or_provider_network_imports() -> None
         for path in AI_SOURCE.glob("*.py")
         for name in _imports(path)
         if name.startswith(FORBIDDEN_IMPORTS)
+        or (
+            name.startswith("quant_lab.paper")
+            and (path.name, name) not in READ_ONLY_DOMAIN_IMPORTS
+        )
     }
     assert violations == {}
 

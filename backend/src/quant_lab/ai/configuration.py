@@ -19,6 +19,7 @@ FORBIDDEN_SECRET_KEY_NAMES = frozenset(
         "accesstoken",
         "apikey",
         "authorization",
+        "bearer",
         "bearertoken",
         "credential",
         "credentials",

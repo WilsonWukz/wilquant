@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -9,6 +11,8 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text
 
 from alembic import command
+from quant_lab.ai.contracts import CanonicalEvidenceItem
+from quant_lab.ai.fingerprints import fingerprint_payload
 from quant_lab.core.config import Settings
 from quant_lab.db.sqlite import create_sqlite_engine
 from quant_lab.main import create_app
@@ -17,6 +21,55 @@ pytestmark = pytest.mark.anyio
 
 
 def _seed_ai2_records(engine) -> None:
+    value_fingerprint = fingerprint_payload(
+        {"value": Decimal("12.30"), "semantic_type": "MONEY", "unit": "CNY"}
+    )
+    items = [
+        {
+            "ref_id": "ev-" + "7" * 64,
+            "source_type": "PAPER_ACCOUNT_SNAPSHOT",
+            "source_id": "paper-snapshot-1",
+            "source_version_id": "snapshot-v1",
+            "field_path": "cash",
+            "classification": "FACT",
+            "semantic_type": "MONEY",
+            "value": "12.3",
+            "unit": "CNY",
+            "subject": "PAPER_ACCOUNT:1",
+            "source_fingerprint": "8" * 64,
+            "value_fingerprint": value_fingerprint,
+            "effective_at": "2026-08-30T08:00:00Z",
+            "known_at": "2026-08-30T08:01:00Z",
+            "observed_at": "2026-08-30T08:01:00Z",
+            "market_timestamp": "2026-08-30T08:00:00Z",
+            "freshness_class": "IMMUTABLE_HISTORICAL",
+            "known_delay_seconds": None,
+            "market": "CN_A_SHARE",
+            "asset_type": "EQUITY",
+            "instrument_id": None,
+            "currency": "CNY",
+            "context": {"analysis_scope": "PAPER_ACCOUNT_SNAPSHOT", "market": "CN_A_SHARE"},
+            "resolver_policy_version": "1",
+            "integrity_status": "VERIFIED",
+        }
+    ]
+    temporal_context = {
+        "market_data_cutoff": "2026-08-30T23:59:59Z",
+        "knowledge_cutoff": "2026-08-30T23:59:59Z",
+        "market": "CN_A_SHARE",
+        "timezone": "Asia/Shanghai",
+        "asset_type": "EQUITY",
+        "analysis_mode": "HISTORICAL_REPLAY",
+    }
+    evidence_context = {
+        "market": "CN_A_SHARE",
+        "exchange": "SSE",
+        "instrument_id": "SSE:600000",
+        "currency": "CNY",
+        "asset_type": "EQUITY",
+        "timezone": "Asia/Shanghai",
+        "market_rules_version": None,
+    }
     with engine.begin() as connection:
         connection.execute(
             text(
@@ -82,9 +135,15 @@ def _seed_ai2_records(engine) -> None:
                 "INSERT INTO ai_evidence_packs "
                 "(id,case_id,temporal_context_json,evidence_context_json,requirements_json,"
                 "items_json,policy_version,fingerprint,created_at) VALUES "
-                "('pack','case','{}','{}','{}','[]','ai-evidence-v1',:f,CURRENT_TIMESTAMP)"
+                "('pack','case',:temporal,:context,'{}',:items,'ai-evidence-v2',:f,"
+                "CURRENT_TIMESTAMP)"
             ),
-            {"f": "3" * 64},
+            {
+                "temporal": json.dumps(temporal_context),
+                "context": json.dumps(evidence_context),
+                "items": json.dumps(items),
+                "f": "3" * 64,
+            },
         )
         connection.execute(
             text(
@@ -92,10 +151,27 @@ def _seed_ai2_records(engine) -> None:
                 "(id,run_id,attempt_id,evidence_pack_id,disposition,findings_json,"
                 "accepted_assertions_json,observations_json,candidate_fingerprint,"
                 "policy_version,fingerprint,created_at) VALUES "
-                "('validation','run','attempt','pack','REJECTED','[]','[]','[]',:candidate,"
+                "('validation','run','attempt','pack','REJECTED',:findings,'[]','[]',:candidate,"
                 "'ai-validation-v1',:fingerprint,CURRENT_TIMESTAMP)"
             ),
-            {"candidate": "4" * 64, "fingerprint": "5" * 64},
+            {
+                "findings": json.dumps(
+                    [
+                        {
+                            "layer": "SCHEMA",
+                            "code": "SCHEMA_INVALID_ENUM",
+                            "severity": "ERROR",
+                            "message_safe": "SCHEMA_INVALID_ENUM",
+                            "retryable": True,
+                            "claim_id": "c1",
+                            "evidence_ref": None,
+                            "field_path": "claims[2].predicate",
+                        }
+                    ]
+                ),
+                "candidate": "4" * 64,
+                "fingerprint": "5" * 64,
+            },
         )
         connection.execute(
             text(
@@ -109,9 +185,7 @@ def _seed_ai2_records(engine) -> None:
 
 
 @pytest.fixture
-async def ai2_client(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> AsyncIterator[AsyncClient]:
+async def ai2_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[AsyncClient]:
     settings = Settings(project_root=tmp_path, runtime_root=tmp_path / "runtime")
     monkeypatch.setenv("QUANT_LAB_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setenv("QUANT_LAB_RUNTIME_ROOT", str(settings.runtime_root))
@@ -149,6 +223,31 @@ async def test_ai2_provenance_endpoints_are_read_only(
     assert "authorization" not in serialized
 
 
+async def test_restart_preserves_full_evidence_and_schema_contract(
+    ai2_client: AsyncClient,
+) -> None:
+    pack = (await ai2_client.get("/api/v1/ai/evidence-packs/pack")).json()
+    validation = (await ai2_client.get("/api/v1/ai/validation-results/validation")).json()
+    retrieval = (await ai2_client.get("/api/v1/ai/retrieval-snapshots/snapshot")).json()
+
+    item = pack["items"][0]
+    restored_item = CanonicalEvidenceItem.model_validate(item)
+    assert item["semantic_type"] == "MONEY"
+    assert item["value_fingerprint"] == fingerprint_payload(
+        {"value": Decimal("12.30"), "semantic_type": "MONEY", "unit": "CNY"}
+    )
+    assert item["freshness_class"] == "IMMUTABLE_HISTORICAL"
+    assert item["context"] == {
+        "analysis_scope": "PAPER_ACCOUNT_SNAPSHOT",
+        "market": "CN_A_SHARE",
+    }
+    assert item["resolver_policy_version"] == "1"
+    assert restored_item.value_fingerprint == item["value_fingerprint"]
+    assert validation["findings"][0]["code"] == "SCHEMA_INVALID_ENUM"
+    assert validation["findings"][0]["field_path"] == "claims[2].predicate"
+    assert retrieval["policy_version"] == "ai-retrieval-v1"
+
+
 @pytest.mark.parametrize(
     "path",
     (
@@ -157,9 +256,7 @@ async def test_ai2_provenance_endpoints_are_read_only(
         "/api/v1/ai/retrieval-snapshots/missing",
     ),
 )
-async def test_ai2_missing_provenance_is_safe_404(
-    ai2_client: AsyncClient, path: str
-) -> None:
+async def test_ai2_missing_provenance_is_safe_404(ai2_client: AsyncClient, path: str) -> None:
     response = await ai2_client.get(path)
 
     assert response.status_code == 404

@@ -1,11 +1,21 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
+
+from quant_lab.ai.fingerprints import fingerprint_payload
+from quant_lab.market_data.fingerprints import canonical_json_bytes
 
 
 class EvidenceSourceType(StrEnum):
@@ -29,6 +39,33 @@ class EvidenceClassification(StrEnum):
     SYSTEM_STATE = "SYSTEM_STATE"
 
 
+class EvidenceSemanticType(StrEnum):
+    NUMBER = "NUMBER"
+    MONEY = "MONEY"
+    RATIO = "RATIO"
+    COUNT = "COUNT"
+    TEXT = "TEXT"
+    ENUM = "ENUM"
+    DATETIME = "DATETIME"
+    BOOLEAN = "BOOLEAN"
+    IDENTIFIER = "IDENTIFIER"
+    JSON = "JSON"
+
+
+class FreshnessClass(StrEnum):
+    IMMUTABLE_HISTORICAL = "IMMUTABLE_HISTORICAL"
+    EOD = "EOD"
+    DELAYED = "DELAYED"
+    REALTIME = "REALTIME"
+
+
+class FreshnessRequirement(StrEnum):
+    HISTORICAL_OK = "HISTORICAL_OK"
+    EOD_REQUIRED = "EOD_REQUIRED"
+    DELAYED_OK = "DELAYED_OK"
+    REALTIME_REQUIRED = "REALTIME_REQUIRED"
+
+
 class ClaimType(StrEnum):
     FACT = "FACT"
     INFERENCE = "INFERENCE"
@@ -36,11 +73,20 @@ class ClaimType(StrEnum):
 
 
 class ClaimPredicate(StrEnum):
-    EQUALS = "EQUALS"
-    GREATER_THAN = "GREATER_THAN"
-    LESS_THAN = "LESS_THAN"
+    EQ = "EQ"
+    NE = "NE"
+    GT = "GT"
+    GTE = "GTE"
+    LT = "LT"
+    LTE = "LTE"
     DELTA = "DELTA"
     PERCENT_CHANGE = "PERCENT_CHANGE"
+
+
+class Uncertainty(StrEnum):
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
 
 
 class ValidationLayer(StrEnum):
@@ -85,7 +131,9 @@ RuleTopic = Literal[
 ]
 
 
-def _aware_utc(value: datetime) -> datetime:
+def _aware_utc(value: datetime | None) -> datetime | None:
+    if value is None:
+        return None
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("datetime must be timezone-aware")
     return value.astimezone(UTC)
@@ -128,32 +176,204 @@ class AnalysisRequirements(BaseModel):
         return self.requires_market_rules or bool(self.required_rule_topics)
 
 
-EvidenceScalar = str | int | float | bool | Decimal | None
+EvidenceScalar = (
+    str
+    | int
+    | float
+    | bool
+    | Decimal
+    | datetime
+    | date
+    | tuple[object, ...]
+    | list[object]
+    | dict[str, object]
+    | None
+)
+
+
+def canonical_unit(value: str | None) -> str | None:
+    if value is None:
+        return None
+    normalized = "".join(
+        character for character in value.upper() if character.isalnum() or character == "%"
+    )
+    aliases = {
+        "%": "PERCENT",
+        "PERCENT": "PERCENT",
+        "PERCENTAGE": "PERCENT",
+        "RATIO": "RATIO",
+        "CNY": "CNY",
+        "RMB": "CNY",
+        "USD": "USD",
+        "SHARE": "SHARES",
+        "SHARES": "SHARES",
+        "COUNT": "COUNT",
+    }
+    return aliases.get(normalized, normalized)
+
+
+_CONTEXT_KEYS = frozenset({"market", "exchange", "universe", "analysis_scope", "strategy_family"})
+_SECRET_CONTEXT_KEYS = frozenset(
+    {
+        "apikey",
+        "clientsecret",
+        "accesstoken",
+        "authorization",
+        "bearer",
+        "password",
+        "gatewaysecret",
+        "brokercredential",
+    }
+)
+
+
+def _normalized_key(value: str) -> str:
+    return "".join(character for character in value.lower() if character.isalnum())
+
+
+def _context_depth(value: object, depth: int = 0) -> int:
+    if isinstance(value, dict):
+        return max([_context_depth(item, depth + 1) for item in value.values()] or [depth])
+    if isinstance(value, list | tuple):
+        return max([_context_depth(item, depth + 1) for item in value] or [depth])
+    return depth
+
+
+def _context_contains_secret_key(value: object) -> bool:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            normalized = _normalized_key(str(key))
+            if normalized in _SECRET_CONTEXT_KEYS or normalized.endswith(
+                ("apikey", "authorization", "credential", "password", "secret", "token")
+            ):
+                return True
+            if _context_contains_secret_key(item):
+                return True
+    elif isinstance(value, list | tuple):
+        return any(_context_contains_secret_key(item) for item in value)
+    return False
 
 
 class CanonicalEvidenceItem(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    ref: str = Field(min_length=1, max_length=255)
+    ref_id: str = Field(
+        min_length=1,
+        max_length=255,
+        validation_alias=AliasChoices("ref_id", "ref"),
+    )
     source_type: EvidenceSourceType
-    source_entity_id: str = Field(min_length=1, max_length=100)
+    source_id: str = Field(
+        min_length=1,
+        max_length=100,
+        validation_alias=AliasChoices("source_id", "source_entity_id"),
+    )
     source_version_id: str = Field(min_length=1, max_length=100)
-    field: str = Field(min_length=1, max_length=100)
-    value: EvidenceScalar
-    value_type: Literal["STRING", "INTEGER", "DECIMAL", "BOOLEAN", "NULL"]
-    unit: str | None = Field(default=None, max_length=32)
+    field_path: str = Field(
+        min_length=1,
+        max_length=100,
+        validation_alias=AliasChoices("field_path", "field"),
+    )
     classification: EvidenceClassification
+    semantic_type: EvidenceSemanticType = Field(
+        validation_alias=AliasChoices("semantic_type", "value_type")
+    )
+    value: EvidenceScalar
+    unit: str | None = Field(default=None, max_length=32)
     subject: str = Field(min_length=1, max_length=160)
+    source_fingerprint: str = Field(
+        min_length=64,
+        max_length=64,
+        pattern=r"^[0-9a-f]{64}$",
+        validation_alias=AliasChoices("source_fingerprint", "content_fingerprint"),
+    )
+    value_fingerprint: str | None = Field(
+        default=None, min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
     effective_at: datetime
     known_at: datetime
+    observed_at: datetime | None = None
+    market_timestamp: datetime | None = None
+    freshness_class: FreshnessClass = FreshnessClass.IMMUTABLE_HISTORICAL
+    known_delay_seconds: int | None = Field(default=None, ge=0)
     market: Market
     asset_type: AssetType
-    instrument_id: str = Field(min_length=1, max_length=100)
+    instrument_id: str | None = Field(default=None, min_length=1, max_length=100)
     currency: str | None = Field(default=None, max_length=8)
-    content_fingerprint: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+    context: dict[str, object] = Field(default_factory=dict)
+    resolver_policy_version: str = Field(default="legacy-v1", min_length=1, max_length=64)
     integrity_status: Literal["VERIFIED", "MISSING", "INVALID"] = "VERIFIED"
 
-    _utc_times = field_validator("effective_at", "known_at")(_aware_utc)
+    @field_validator("semantic_type", mode="before")
+    @classmethod
+    def _legacy_semantic_type(cls, value: object) -> object:
+        aliases = {
+            "STRING": EvidenceSemanticType.TEXT,
+            "INTEGER": EvidenceSemanticType.COUNT,
+            "DECIMAL": EvidenceSemanticType.NUMBER,
+            "BOOLEAN": EvidenceSemanticType.BOOLEAN,
+            "NULL": EvidenceSemanticType.JSON,
+        }
+        return aliases.get(value, value) if isinstance(value, str) else value
+
+    _utc_times = field_validator("effective_at", "known_at", "observed_at", "market_timestamp")(
+        _aware_utc
+    )
+
+    @field_validator("context")
+    @classmethod
+    def _bounded_context(cls, value: dict[str, object]) -> dict[str, object]:
+        disallowed = set(value) - _CONTEXT_KEYS
+        if disallowed:
+            raise ValueError("evidence context key is not allowlisted")
+        if _context_contains_secret_key(value):
+            raise ValueError("secret-shaped evidence context is forbidden")
+        if len(value) > 8 or _context_depth(value) > 2:
+            raise ValueError("evidence context exceeds structural limits")
+        if len(canonical_json_bytes(value)) > 4096:
+            raise ValueError("evidence context exceeds size limit")
+        return dict(sorted(value.items()))
+
+    @model_validator(mode="after")
+    def _derive_value_fingerprint(self) -> CanonicalEvidenceItem:
+        expected = fingerprint_payload(
+            {
+                "value": self.value,
+                "semantic_type": self.semantic_type,
+                "unit": canonical_unit(self.unit),
+            }
+        )
+        if self.value_fingerprint is None:
+            object.__setattr__(self, "value_fingerprint", expected)
+        elif self.value_fingerprint != expected:
+            raise ValueError("value_fingerprint does not match canonical value")
+        return self
+
+    @property
+    def ref(self) -> str:
+        return self.ref_id
+
+    @property
+    def source_entity_id(self) -> str:
+        return self.source_id
+
+    @property
+    def field(self) -> str:
+        return self.field_path
+
+    @property
+    def content_fingerprint(self) -> str:
+        return self.source_fingerprint
+
+    @property
+    def value_type(self) -> str:
+        return {
+            EvidenceSemanticType.TEXT: "STRING",
+            EvidenceSemanticType.ENUM: "STRING",
+            EvidenceSemanticType.IDENTIFIER: "STRING",
+            EvidenceSemanticType.COUNT: "INTEGER",
+            EvidenceSemanticType.BOOLEAN: "BOOLEAN",
+        }.get(self.semantic_type, "DECIMAL")
 
 
 class EvidencePack(BaseModel):
@@ -177,12 +397,25 @@ class StructuredClaim(BaseModel):
 
     claim_id: str = Field(min_length=1, max_length=100)
     claim_type: ClaimType
+    text: str = Field(min_length=1, max_length=2000)
     subject: str = Field(min_length=1, max_length=160)
     predicate: ClaimPredicate
     value: EvidenceScalar
     unit: str | None = Field(default=None, max_length=32)
     evidence_refs: tuple[str, ...] = ()
     operand_refs: tuple[str, ...] = ()
+    uncertainty: Uncertainty | None = None
+    recommendation: str | None = Field(default=None, max_length=64)
+
+    @field_validator("predicate", mode="before")
+    @classmethod
+    def _normalize_legacy_predicate(cls, value: object) -> object:
+        aliases = {
+            "EQUALS": ClaimPredicate.EQ,
+            "GREATER_THAN": ClaimPredicate.GT,
+            "LESS_THAN": ClaimPredicate.LT,
+        }
+        return aliases.get(value, value) if isinstance(value, str) else value
 
 
 class StructuredCandidate(BaseModel):
@@ -190,6 +423,7 @@ class StructuredCandidate(BaseModel):
 
     schema_version: Literal["ai-structured-output-v1"]
     action_type: str = Field(min_length=1, max_length=64)
+    recommendation: str | None = Field(default=None, max_length=64)
     claims: tuple[StructuredClaim, ...]
 
 
@@ -203,6 +437,7 @@ class ValidationFinding(BaseModel):
     retryable: bool
     claim_id: str | None = None
     evidence_ref: str | None = None
+    field_path: str | None = None
 
 
 class AssertionObservation(BaseModel):
@@ -251,9 +486,7 @@ class ValidationResult(BaseModel):
     @property
     def error_codes(self) -> tuple[str, ...]:
         return tuple(
-            finding.code
-            for finding in self.findings
-            if finding.severity is FindingSeverity.ERROR
+            finding.code for finding in self.findings if finding.severity is FindingSeverity.ERROR
         )
 
 

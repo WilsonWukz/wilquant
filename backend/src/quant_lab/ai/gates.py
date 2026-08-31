@@ -14,6 +14,11 @@ from quant_lab.ai.contracts import (
 REASON_ORDER = (
     "FORBIDDEN_AI_AUTHORITY",
     "IMMUTABLE_FACT_DRIFT",
+    "EVIDENCE_REF_NOT_FOUND",
+    "EVIDENCE_VALUE_MISMATCH",
+    "SEMANTIC_PREDICATE_NOT_SUPPORTED",
+    "DERIVED_DIVISION_BY_ZERO",
+    "DUPLICATE_CLAIM_ID",
     "FABRICATED_EVIDENCE_REF",
     "GROUNDING_CONTRADICTION",
     "TEMPORAL_LEAK",
@@ -26,6 +31,7 @@ REASON_ORDER = (
     "CURRENCY_MISMATCH",
     "MARKET_RULES_MISMATCH",
     "MISSING_MARKET_RULES",
+    "TEMPORAL_METADATA_UNAVAILABLE",
     "INSUFFICIENT_EVIDENCE",
     "STALE_MARKET_DATA",
     "NOT_COMPARABLE",
@@ -33,9 +39,35 @@ REASON_ORDER = (
     "PROCEED",
 )
 
-DETERMINISTIC_VIOLATIONS = frozenset(REASON_ORDER[:13])
+DETERMINISTIC_VIOLATIONS = frozenset(
+    {
+        "FORBIDDEN_AI_AUTHORITY",
+        "IMMUTABLE_FACT_DRIFT",
+        "EVIDENCE_REF_NOT_FOUND",
+        "EVIDENCE_VALUE_MISMATCH",
+        "SEMANTIC_PREDICATE_NOT_SUPPORTED",
+        "DERIVED_DIVISION_BY_ZERO",
+        "DUPLICATE_CLAIM_ID",
+        "FABRICATED_EVIDENCE_REF",
+        "GROUNDING_CONTRADICTION",
+        "TEMPORAL_LEAK",
+        "FUTURE_KNOWLEDGE",
+        "FUTURE_MARKET_DATA",
+        "INVALID_EVIDENCE",
+        "MARKET_MISMATCH",
+        "ASSET_TYPE_MISMATCH",
+        "INSTRUMENT_MISMATCH",
+        "CURRENCY_MISMATCH",
+        "MARKET_RULES_MISMATCH",
+    }
+)
 MISSING_OR_STALE = frozenset(
-    {"MISSING_MARKET_RULES", "INSUFFICIENT_EVIDENCE", "STALE_MARKET_DATA"}
+    {
+        "MISSING_MARKET_RULES",
+        "TEMPORAL_METADATA_UNAVAILABLE",
+        "INSUFFICIENT_EVIDENCE",
+        "STALE_MARKET_DATA",
+    }
 )
 UNANSWERABLE = frozenset({"NOT_COMPARABLE", "FUNDAMENTALLY_UNANSWERABLE"})
 
@@ -54,19 +86,13 @@ class ResearchGate:
         evidence_context: EvidenceContext,
         requirements: AnalysisRequirements,
     ) -> GateResult:
-        codes = {
-            finding.code
-            for finding in findings
-            if finding.severity is FindingSeverity.ERROR
-        }
+        codes = {finding.code for finding in findings if finding.severity is FindingSeverity.ERROR}
         if requirements.market_rules_required and evidence_context.market_rules_version is None:
             codes.add("MISSING_MARKET_RULES")
         if codes & DETERMINISTIC_VIOLATIONS:
             return GateResult(decision=GateDecision.REJECT, reason_codes=_ordered(codes))
         if codes & MISSING_OR_STALE:
-            return GateResult(
-                decision=GateDecision.WAIT_FOR_EVIDENCE, reason_codes=_ordered(codes)
-            )
+            return GateResult(decision=GateDecision.WAIT_FOR_EVIDENCE, reason_codes=_ordered(codes))
         if codes & UNANSWERABLE:
             return GateResult(decision=GateDecision.ABSTAIN, reason_codes=_ordered(codes))
         if codes:

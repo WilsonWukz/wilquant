@@ -18,55 +18,60 @@ from quant_lab.ai.contracts import (
     EvidenceClassification,
     EvidencePack,
     EvidenceScalar,
+    EvidenceSemanticType,
     FindingSeverity,
+    FreshnessClass,
+    FreshnessRequirement,
     StructuredCandidate,
     StructuredClaim,
     ValidationDisposition,
     ValidationFinding,
     ValidationLayer,
     ValidationResult,
+    canonical_unit,
 )
 from quant_lab.ai.fingerprints import fingerprint_payload
 from quant_lab.ai.persistence import AIValidationResultModel
 from quant_lab.ai.policies import AI2_POLICY, AI2Policy
 from quant_lab.market_data.fingerprints import canonical_json_bytes
 
-ALLOWED_ACTION_TYPES = frozenset({"RESEARCH_ANALYSIS", "RESEARCH_DIAGNOSIS"})
+ALLOWED_ACTION_TYPES = frozenset(
+    {
+        "RESEARCH_RECOMMENDATION",
+        "EXPERIMENT_DRAFT",
+        "JOURNAL_DRAFT",
+        "THESIS_REVISION_DRAFT",
+    }
+)
+ALLOWED_RECOMMENDATIONS = frozenset(
+    {
+        "CREATE_EXPERIMENT_DRAFT",
+        "ADD_RESEARCH_JOURNAL_DRAFT",
+        "CREATE_THESIS_REVISION_DRAFT",
+        "WAIT_FOR_MORE_DATA",
+        "REVIEW_STRATEGY",
+        "REVIEW_PAPER_RESULTS",
+    }
+)
 _CLAIM_KEYS = frozenset(
     {
         "claim_id",
         "claim_type",
+        "text",
         "subject",
         "predicate",
         "value",
         "unit",
         "evidence_refs",
         "operand_refs",
+        "uncertainty",
+        "recommendation",
     }
 )
 
 
 def _canonical_unit(value: str | None) -> str | None:
-    if value is None:
-        return None
-    normalized = "".join(
-        character
-        for character in value.upper()
-        if character.isalnum() or character == "%"
-    )
-    aliases = {
-        "%": "PERCENT",
-        "PERCENT": "PERCENT",
-        "PERCENTAGE": "PERCENT",
-        "RATIO": "RATIO",
-        "CNY": "CNY",
-        "RMB": "CNY",
-        "USD": "USD",
-        "SHARE": "SHARES",
-        "SHARES": "SHARES",
-        "COUNT": "COUNT",
-    }
-    return aliases.get(normalized, normalized)
+    return canonical_unit(value)
 
 
 def _item_map(pack: EvidencePack) -> dict[str, CanonicalEvidenceItem]:
@@ -80,9 +85,7 @@ def _canonical_subject(
 ) -> str:
     items = _item_map(pack)
     referenced = [
-        items[ref].subject
-        for ref in [*claim.evidence_refs, *claim.operand_refs]
-        if ref in items
+        items[ref].subject for ref in [*claim.evidence_refs, *claim.operand_refs] if ref in items
     ]
     if referenced and len(set(referenced)) == 1:
         return referenced[0]
@@ -142,20 +145,28 @@ def _decimal(value: EvidenceScalar) -> Decimal:
 def _values_equal(
     left: EvidenceScalar,
     right: EvidenceScalar,
-    unit: str | None,
+    semantic_type: EvidenceSemanticType,
     policy: AI2Policy,
 ) -> bool:
+    if semantic_type in {
+        EvidenceSemanticType.TEXT,
+        EvidenceSemanticType.ENUM,
+        EvidenceSemanticType.BOOLEAN,
+        EvidenceSemanticType.IDENTIFIER,
+        EvidenceSemanticType.JSON,
+        EvidenceSemanticType.DATETIME,
+    }:
+        return left == right
     try:
         left_number = _decimal(left)
         right_number = _decimal(right)
     except (InvalidOperation, ValueError):
         return left == right
-    canonical_unit = _canonical_unit(unit)
-    if canonical_unit in {"CNY", "USD"}:
+    if semantic_type is EvidenceSemanticType.MONEY:
         tolerance = policy.money_tolerance
-    elif canonical_unit == "COUNT":
+    elif semantic_type is EvidenceSemanticType.COUNT:
         tolerance = policy.count_tolerance
-    elif canonical_unit in {"RATIO", "PERCENT"}:
+    elif semantic_type is EvidenceSemanticType.RATIO:
         tolerance = max(
             policy.ratio_absolute_tolerance,
             abs(right_number) * policy.ratio_relative_tolerance,
@@ -175,6 +186,7 @@ def _finding(
     retryable: bool,
     claim_id: str | None = None,
     evidence_ref: str | None = None,
+    field_path: str | None = None,
 ) -> ValidationFinding:
     return ValidationFinding(
         layer=layer,
@@ -184,7 +196,110 @@ def _finding(
         retryable=retryable,
         claim_id=claim_id,
         evidence_ref=evidence_ref,
+        field_path=field_path,
     )
+
+
+def _schema_field_path(location: Sequence[str | int]) -> str:
+    output = ""
+    for part in location:
+        if isinstance(part, int):
+            output += f"[{part}]"
+        elif output:
+            output += f".{part}"
+        else:
+            output = str(part)
+    return output or "$"
+
+
+def _schema_findings(error: ValidationError) -> tuple[ValidationFinding, ...]:
+    findings: list[ValidationFinding] = []
+    for detail in error.errors(include_url=False, include_context=False, include_input=False):
+        kind = str(detail["type"])
+        if kind == "missing":
+            code = "SCHEMA_MISSING_FIELD"
+        elif kind in {"enum", "literal_error"}:
+            code = "SCHEMA_INVALID_ENUM"
+        else:
+            code = "SCHEMA_INVALID_TYPE"
+        findings.append(
+            _finding(
+                ValidationLayer.SCHEMA,
+                code,
+                retryable=True,
+                field_path=_schema_field_path(detail["loc"]),
+            )
+        )
+    return tuple(findings)
+
+
+_ORDERED_SEMANTIC_TYPES = frozenset(
+    {
+        EvidenceSemanticType.NUMBER,
+        EvidenceSemanticType.MONEY,
+        EvidenceSemanticType.RATIO,
+        EvidenceSemanticType.COUNT,
+        EvidenceSemanticType.DATETIME,
+    }
+)
+
+
+def _ordered_value(
+    value: EvidenceScalar, semantic_type: EvidenceSemanticType
+) -> Decimal | datetime:
+    if semantic_type is EvidenceSemanticType.DATETIME:
+        if isinstance(value, datetime):
+            parsed = value
+        elif isinstance(value, str):
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        else:
+            raise ValueError("datetime evidence is not comparable")
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("datetime evidence must be timezone-aware")
+        return parsed.astimezone(UTC)
+    return _decimal(value)
+
+
+def _predicate_matches(
+    *,
+    predicate: ClaimPredicate,
+    actual: EvidenceScalar,
+    expected: EvidenceScalar,
+    semantic_type: EvidenceSemanticType,
+    policy: AI2Policy,
+) -> bool:
+    equal = _values_equal(actual, expected, semantic_type, policy)
+    if predicate is ClaimPredicate.EQ:
+        return equal
+    if predicate is ClaimPredicate.NE:
+        return not equal
+    if semantic_type not in _ORDERED_SEMANTIC_TYPES:
+        raise TypeError("semantic predicate is not supported")
+    left = _ordered_value(actual, semantic_type)
+    right = _ordered_value(expected, semantic_type)
+    if semantic_type is EvidenceSemanticType.DATETIME:
+        if not isinstance(left, datetime) or not isinstance(right, datetime):
+            raise TypeError("datetime predicate operands are invalid")
+        if predicate is ClaimPredicate.GT:
+            return left > right
+        if predicate is ClaimPredicate.GTE:
+            return left > right or equal
+        if predicate is ClaimPredicate.LT:
+            return left < right
+        if predicate is ClaimPredicate.LTE:
+            return left < right or equal
+    else:
+        if not isinstance(left, Decimal) or not isinstance(right, Decimal):
+            raise TypeError("numeric predicate operands are invalid")
+        if predicate is ClaimPredicate.GT:
+            return left > right
+        if predicate is ClaimPredicate.GTE:
+            return left > right or equal
+        if predicate is ClaimPredicate.LT:
+            return left < right
+        if predicate is ClaimPredicate.LTE:
+            return left < right or equal
+    raise TypeError("predicate is not a direct comparison")
 
 
 class ValidationService:
@@ -212,6 +327,7 @@ class ValidationService:
         sanitized = {key: item for key, item in value.items() if key in _CLAIM_KEYS}
         sanitized.setdefault("evidence_refs", [])
         sanitized.setdefault("operand_refs", [])
+        sanitized.setdefault("text", "schema-invalid observation")
         try:
             claim = StructuredClaim.model_validate(sanitized)
         except ValidationError:
@@ -239,14 +355,10 @@ class ValidationService:
         candidate_fingerprint: str,
         policy_version: str,
     ) -> ValidationResult:
-        has_error = any(
-            finding.severity is FindingSeverity.ERROR for finding in findings
-        )
+        has_error = any(finding.severity is FindingSeverity.ERROR for finding in findings)
         return ValidationResult(
             disposition=(
-                ValidationDisposition.REJECTED
-                if has_error
-                else ValidationDisposition.ACCEPTED
+                ValidationDisposition.REJECTED if has_error else ValidationDisposition.ACCEPTED
             ),
             findings=tuple(findings),
             accepted_assertions=() if has_error else tuple(accepted),
@@ -262,6 +374,8 @@ class ValidationService:
         *,
         origin_attempt_id: str,
         prior_assertions: Sequence[AcceptedAssertion | AssertionObservation] = (),
+        freshness_requirement: FreshnessRequirement = FreshnessRequirement.HISTORICAL_OK,
+        reference_now: datetime | None = None,
     ) -> ValidationResult:
         findings: list[ValidationFinding] = []
         observations: list[AssertionObservation] = []
@@ -274,9 +388,7 @@ class ValidationService:
             try:
                 parsed = json.loads(candidate)
             except (json.JSONDecodeError, UnicodeDecodeError):
-                findings.append(
-                    _finding(ValidationLayer.SYNTAX, "SYNTAX_INVALID", retryable=True)
-                )
+                findings.append(_finding(ValidationLayer.SYNTAX, "SYNTAX_INVALID", retryable=True))
                 return self._result(
                     findings=findings,
                     accepted=(),
@@ -288,7 +400,7 @@ class ValidationService:
             parsed = dict(candidate)
         try:
             structured = StructuredCandidate.model_validate(parsed)
-        except ValidationError:
+        except ValidationError as error:
             claims = parsed.get("claims", []) if isinstance(parsed, Mapping) else []
             if isinstance(claims, list | tuple):
                 observations.extend(
@@ -297,7 +409,7 @@ class ValidationService:
                     if (observation := self._observation(value, pack, origin_attempt_id))
                     is not None
                 )
-            findings.append(_finding(ValidationLayer.SCHEMA, "SCHEMA_INVALID", retryable=True))
+            findings.extend(_schema_findings(error))
             return self._result(
                 findings=findings,
                 accepted=(),
@@ -306,7 +418,18 @@ class ValidationService:
                 policy_version=self.policy.validation_policy_version,
             )
 
-        if structured.action_type not in ALLOWED_ACTION_TYPES:
+        recommendations = {
+            value
+            for value in (
+                structured.recommendation,
+                *(claim.recommendation for claim in structured.claims),
+            )
+            if value is not None
+        }
+        if (
+            structured.action_type not in ALLOWED_ACTION_TYPES
+            or not recommendations <= ALLOWED_RECOMMENDATIONS
+        ):
             findings.append(
                 _finding(
                     ValidationLayer.SEMANTIC,
@@ -314,6 +437,21 @@ class ValidationService:
                     retryable=False,
                 )
             )
+
+        claim_ids = [claim.claim_id for claim in structured.claims]
+        duplicate_ids = sorted(
+            claim_id for claim_id in set(claim_ids) if claim_ids.count(claim_id) > 1
+        )
+        findings.extend(
+            _finding(
+                ValidationLayer.SCHEMA,
+                "DUPLICATE_CLAIM_ID",
+                retryable=True,
+                claim_id=claim_id,
+                field_path="claims",
+            )
+            for claim_id in duplicate_ids
+        )
 
         items = _item_map(pack)
         accepted: list[AcceptedAssertion] = []
@@ -362,7 +500,7 @@ class ValidationService:
                 findings.extend(
                     _finding(
                         ValidationLayer.GROUNDING,
-                        "FABRICATED_EVIDENCE_REF",
+                        "EVIDENCE_REF_NOT_FOUND",
                         retryable=False,
                         claim_id=claim.claim_id,
                         evidence_ref=ref,
@@ -370,9 +508,67 @@ class ValidationService:
                     for ref in sorted(set(missing))
                 )
                 continue
+            freshness_findings: list[ValidationFinding] = []
+            for ref in sorted(set(all_refs)):
+                item = items[ref]
+                acceptable = {
+                    FreshnessRequirement.HISTORICAL_OK: set(FreshnessClass),
+                    FreshnessRequirement.EOD_REQUIRED: {
+                        FreshnessClass.EOD,
+                        FreshnessClass.REALTIME,
+                    },
+                    FreshnessRequirement.DELAYED_OK: {
+                        FreshnessClass.EOD,
+                        FreshnessClass.DELAYED,
+                        FreshnessClass.REALTIME,
+                    },
+                    FreshnessRequirement.REALTIME_REQUIRED: {FreshnessClass.REALTIME},
+                }[freshness_requirement]
+                if item.freshness_class not in acceptable:
+                    freshness_findings.append(
+                        _finding(
+                            ValidationLayer.TEMPORAL,
+                            "STALE_MARKET_DATA",
+                            retryable=True,
+                            claim_id=claim.claim_id,
+                            evidence_ref=ref,
+                        )
+                    )
+                    continue
+                if freshness_requirement is FreshnessRequirement.REALTIME_REQUIRED:
+                    if item.observed_at is None:
+                        freshness_findings.append(
+                            _finding(
+                                ValidationLayer.TEMPORAL,
+                                "TEMPORAL_METADATA_UNAVAILABLE",
+                                retryable=True,
+                                claim_id=claim.claim_id,
+                                evidence_ref=ref,
+                            )
+                        )
+                        continue
+                    if reference_now is None:
+                        raise ValueError(
+                            "reference_now is required for realtime freshness validation"
+                        )
+                    if reference_now.tzinfo is None or reference_now.utcoffset() is None:
+                        raise ValueError("reference_now must be timezone-aware")
+                    age_seconds = (reference_now.astimezone(UTC) - item.observed_at).total_seconds()
+                    if age_seconds > self.policy.realtime_max_age_seconds:
+                        freshness_findings.append(
+                            _finding(
+                                ValidationLayer.TEMPORAL,
+                                "STALE_MARKET_DATA",
+                                retryable=True,
+                                claim_id=claim.claim_id,
+                                evidence_ref=ref,
+                            )
+                        )
+            if freshness_findings:
+                findings.extend(freshness_findings)
+                continue
             if claim.claim_type is ClaimType.FACT and any(
-                items[ref].classification is EvidenceClassification.USER_NOTE
-                for ref in all_refs
+                items[ref].classification is EvidenceClassification.USER_NOTE for ref in all_refs
             ):
                 findings.append(
                     _finding(
@@ -387,22 +583,31 @@ class ValidationService:
             grounded_value: EvidenceScalar = claim.value
             if derived:
                 try:
-                    left = _decimal(items[claim.operand_refs[0]].value)
-                    right = _decimal(items[claim.operand_refs[1]].value)
+                    first_item = items[claim.operand_refs[0]]
+                    second_item = items[claim.operand_refs[1]]
+                    if (
+                        first_item.semantic_type not in _ORDERED_SEMANTIC_TYPES
+                        or second_item.semantic_type not in _ORDERED_SEMANTIC_TYPES
+                        or first_item.semantic_type is EvidenceSemanticType.DATETIME
+                        or second_item.semantic_type is EvidenceSemanticType.DATETIME
+                    ):
+                        raise ValueError("derived operands must be numeric")
+                    first = _decimal(first_item.value)
+                    second = _decimal(second_item.value)
                     if claim.predicate is ClaimPredicate.DELTA:
-                        grounded_value = left - right
-                    elif right == 0:
+                        grounded_value = first - second
+                    elif first == 0:
                         findings.append(
                             _finding(
                                 ValidationLayer.GROUNDING,
-                                "DERIVED_ZERO_DENOMINATOR",
+                                "DERIVED_DIVISION_BY_ZERO",
                                 retryable=False,
                                 claim_id=claim.claim_id,
                             )
                         )
                         continue
                     else:
-                        grounded_value = (left - right) / right
+                        grounded_value = (second - first) / abs(first)
                 except (InvalidOperation, ValueError):
                     findings.append(
                         _finding(
@@ -413,28 +618,59 @@ class ValidationService:
                         )
                     )
                     continue
-                if not _values_equal(claim.value, grounded_value, claim.unit, self.policy):
+                result_semantic_type = (
+                    EvidenceSemanticType.RATIO
+                    if claim.predicate is ClaimPredicate.PERCENT_CHANGE
+                    else first_item.semantic_type
+                )
+                if not _values_equal(
+                    claim.value, grounded_value, result_semantic_type, self.policy
+                ):
                     findings.append(
                         _finding(
                             ValidationLayer.GROUNDING,
-                            "GROUNDING_CONTRADICTION",
+                            "EVIDENCE_VALUE_MISMATCH",
                             retryable=False,
                             claim_id=claim.claim_id,
                         )
                     )
             elif claim.claim_type is ClaimType.FACT:
-                if any(
-                    not _values_equal(claim.value, items[ref].value, claim.unit, self.policy)
-                    for ref in claim.evidence_refs
-                ):
-                    findings.append(
-                        _finding(
-                            ValidationLayer.GROUNDING,
-                            "GROUNDING_CONTRADICTION",
-                            retryable=False,
-                            claim_id=claim.claim_id,
+                predicate_error = False
+                for ref in claim.evidence_refs:
+                    item = items[ref]
+                    try:
+                        matches = _predicate_matches(
+                            predicate=claim.predicate,
+                            actual=item.value,
+                            expected=claim.value,
+                            semantic_type=item.semantic_type,
+                            policy=self.policy,
                         )
-                    )
+                    except (TypeError, ValueError, InvalidOperation):
+                        findings.append(
+                            _finding(
+                                ValidationLayer.SEMANTIC,
+                                "SEMANTIC_PREDICATE_NOT_SUPPORTED",
+                                retryable=False,
+                                claim_id=claim.claim_id,
+                                evidence_ref=ref,
+                            )
+                        )
+                        predicate_error = True
+                        continue
+                    if not matches:
+                        predicate_error = True
+                        findings.append(
+                            _finding(
+                                ValidationLayer.GROUNDING,
+                                "EVIDENCE_VALUE_MISMATCH",
+                                retryable=False,
+                                claim_id=claim.claim_id,
+                                evidence_ref=ref,
+                            )
+                        )
+                if predicate_error:
+                    pass
                 else:
                     try:
                         grounded_value = _decimal(claim.value)
@@ -460,9 +696,7 @@ class ValidationService:
             candidate_claims.append((claim, subject, grounded_value))
             accepted.append(
                 AcceptedAssertion(
-                    assertion_identity=assertion_identity(
-                        claim, pack, self.subject_aliases
-                    ),
+                    assertion_identity=assertion_identity(claim, pack, self.subject_aliases),
                     claim_id=claim.claim_id,
                     claim_type=claim.claim_type,
                     subject=subject,
@@ -497,8 +731,15 @@ class ValidationService:
             prior = prior_by_group.get(group)
             if prior is None:
                 continue
+            semantic_type = (
+                items[claim.operand_refs[0]].semantic_type
+                if claim.operand_refs and claim.operand_refs[0] in items
+                else items[claim.evidence_refs[0]].semantic_type
+                if claim.evidence_refs and claim.evidence_refs[0] in items
+                else EvidenceSemanticType.NUMBER
+            )
             if prior.operand_refs != claim.operand_refs or not _values_equal(
-                prior.value, claim.value, claim.unit, self.policy
+                prior.value, claim.value, semantic_type, self.policy
             ):
                 findings.append(
                     _finding(
@@ -523,9 +764,7 @@ class ValidationResultRepository(Protocol):
         self, fingerprint: str
     ) -> AIValidationResultModel | None: ...
 
-    def add_validation_result(
-        self, model: AIValidationResultModel
-    ) -> AIValidationResultModel: ...
+    def add_validation_result(self, model: AIValidationResultModel) -> AIValidationResultModel: ...
 
 
 class ValidationResultRecorder:
@@ -555,9 +794,7 @@ class ValidationResultRecorder:
             "accepted_assertions": [
                 item.model_dump(mode="python") for item in result.accepted_assertions
             ],
-            "observations": [
-                item.model_dump(mode="python") for item in result.observations
-            ],
+            "observations": [item.model_dump(mode="python") for item in result.observations],
             "candidate_fingerprint": result.candidate_fingerprint,
             "policy_version": result.policy_version,
         }
@@ -576,9 +813,7 @@ class ValidationResultRecorder:
                 accepted_assertions_json=canonical_json_bytes(
                     payload["accepted_assertions"]
                 ).decode("utf-8"),
-                observations_json=canonical_json_bytes(payload["observations"]).decode(
-                    "utf-8"
-                ),
+                observations_json=canonical_json_bytes(payload["observations"]).decode("utf-8"),
                 candidate_fingerprint=result.candidate_fingerprint,
                 policy_version=result.policy_version,
                 fingerprint=fingerprint,

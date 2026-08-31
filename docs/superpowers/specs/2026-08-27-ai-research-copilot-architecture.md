@@ -1,6 +1,6 @@
 # wilquant AI Research Copilot 架构设计
 
-- 状态：已设计；AI-1 与 AI-2 已稳定，停止在 AI-3 之前
+- 状态：已设计；AI-1 已稳定，AI-2 `IMPLEMENTED — CONTRACT CLOSURE IN PROGRESS`，停止在 AI-3 之前
 - 日期：2026-08-27
 - 范围：AI 研究分析、证据追溯、案例记忆、研究论点、上下文 Copilot 与草稿动作
 - 前置边界：Phase 5 PAPER、Phase 6A LIVE + Multi-Market Architecture、ADR-0002
@@ -63,7 +63,7 @@ Core 掌握事实、时间截断、Prompt 版本、输入输出指纹、校验�
 
 ## 2. AI-1 / AI-2 实施边界
 
-AI-1 Provenance Foundation 与 AI-2 Evidence, Grounding & Temporal Validation 已按批准边界实现并通过完整质量门：
+AI-1 Provenance Foundation 已按批准边界实现并通过完整质量门；AI-2 Evidence, Grounding & Temporal Validation 已实现，正在收口正式合同：
 
 - 允许新增显式 EvidenceResolver、EvidencePack、ValidationResult、ResearchCaseDocument、RetrievalSnapshot、FTS5 derived index、deterministic validators 与 ResearchGate；
 - 不安装 LLM SDK；

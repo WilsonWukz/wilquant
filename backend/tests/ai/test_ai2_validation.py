@@ -12,6 +12,7 @@ from quant_lab.ai.contracts import (
     EvidenceClassification,
     EvidenceContext,
     EvidencePack,
+    EvidenceSemanticType,
     EvidenceSourceType,
     TemporalContext,
     ValidationDisposition,
@@ -26,13 +27,13 @@ def _item(
     classification: EvidenceClassification = EvidenceClassification.FACT,
 ) -> CanonicalEvidenceItem:
     return CanonicalEvidenceItem(
-        ref=ref,
+        ref_id=ref,
         source_type=EvidenceSourceType.BACKTEST_RUN,
-        source_entity_id="run-1",
+        source_id="run-1",
         source_version_id="v1",
-        field=ref,
+        field_path=ref,
+        semantic_type=EvidenceSemanticType.RATIO,
         value=value,
-        value_type="DECIMAL",
         unit="RATIO",
         classification=classification,
         subject="SSE:600000",
@@ -42,7 +43,7 @@ def _item(
         asset_type="EQUITY",
         instrument_id="SSE:600000",
         currency="CNY",
-        content_fingerprint=(ref[0] if ref[0] in "abcdef" else "a") * 64,
+        source_fingerprint=(ref[0] if ref[0] in "abcdef" else "a") * 64,
     )
 
 
@@ -73,10 +74,11 @@ def _pack(*items: CanonicalEvidenceItem) -> EvidencePack:
     )
 
 
-def _candidate(claim: dict, *, action_type: str = "RESEARCH_ANALYSIS") -> dict:
+def _candidate(claim: dict, *, action_type: str = "RESEARCH_RECOMMENDATION") -> dict:
     return {
         "schema_version": "ai-structured-output-v1",
         "action_type": action_type,
+        "recommendation": "REVIEW_STRATEGY",
         "claims": [claim],
     }
 
@@ -85,8 +87,9 @@ def _fact(**updates) -> dict:
     claim = {
         "claim_id": "claim-1",
         "claim_type": "FACT",
+        "text": "deterministic claim",
         "subject": "SSE:600000",
-        "predicate": "EQUALS",
+        "predicate": "EQ",
         "value": "1.20",
         "unit": "RATIO",
         "evidence_refs": ["a-new"],
@@ -110,20 +113,16 @@ def test_valid_grounded_fact_is_accepted() -> None:
 
 def test_fabricated_ref_and_user_note_fact_are_rejected() -> None:
     validator = ValidationService()
-    pack = _pack(
-        _item("a-new", Decimal("1.20"), classification=EvidenceClassification.USER_NOTE)
-    )
+    pack = _pack(_item("a-new", Decimal("1.20"), classification=EvidenceClassification.USER_NOTE))
 
     fabricated = validator.validate(
         _candidate(_fact(evidence_refs=["missing"])),
         pack,
         origin_attempt_id="attempt-1",
     )
-    user_note = validator.validate(
-        _candidate(_fact()), pack, origin_attempt_id="attempt-1"
-    )
+    user_note = validator.validate(_candidate(_fact()), pack, origin_attempt_id="attempt-1")
 
-    assert "FABRICATED_EVIDENCE_REF" in fabricated.error_codes
+    assert "EVIDENCE_REF_NOT_FOUND" in fabricated.error_codes
     assert "USER_NOTE_CANNOT_SUPPORT_FACT" in user_note.error_codes
 
 
@@ -139,16 +138,12 @@ def test_delta_and_percent_change_are_recomputed_from_ordered_operands() -> None
     percent = _fact(
         predicate="PERCENT_CHANGE",
         value="0.20",
-        operand_refs=["a-new", "b-old"],
+        operand_refs=["b-old", "a-new"],
         evidence_refs=[],
     )
 
-    delta_result = validator.validate(
-        _candidate(delta), pack, origin_attempt_id="attempt-1"
-    )
-    percent_result = validator.validate(
-        _candidate(percent), pack, origin_attempt_id="attempt-1"
-    )
+    delta_result = validator.validate(_candidate(delta), pack, origin_attempt_id="attempt-1")
+    percent_result = validator.validate(_candidate(percent), pack, origin_attempt_id="attempt-1")
 
     assert delta_result.accepted_assertions[0].value == Decimal("20")
     assert percent_result.accepted_assertions[0].value == Decimal("0.2")
@@ -161,7 +156,7 @@ def test_grounding_contradiction_is_not_accepted() -> None:
         origin_attempt_id="attempt-1",
     )
 
-    assert "GROUNDING_CONTRADICTION" in result.error_codes
+    assert "EVIDENCE_VALUE_MISMATCH" in result.error_codes
     assert result.accepted_assertions == ()
 
 
@@ -171,7 +166,7 @@ def test_prior_assertion_helper_has_stable_shape() -> None:
         claim_id="old-id",
         claim_type=ClaimType.FACT,
         subject="SSE:600000",
-        predicate=ClaimPredicate.EQUALS,
+        predicate=ClaimPredicate.EQ,
         value=Decimal("1.20"),
         unit="RATIO",
         evidence_refs=("a-new",),

@@ -27,9 +27,7 @@ class EvidencePackError(ValueError):
 
 
 class EvidencePackRepository(Protocol):
-    def find_evidence_pack_by_fingerprint(
-        self, fingerprint: str
-    ) -> AIEvidencePackModel | None: ...
+    def find_evidence_pack_by_fingerprint(self, fingerprint: str) -> AIEvidencePackModel | None: ...
 
     def add_evidence_pack(self, model: AIEvidencePackModel) -> AIEvidencePackModel: ...
 
@@ -82,7 +80,7 @@ class EvidencePackService:
             raise EvidencePackError("MARKET_MISMATCH", "evidence market mismatch")
         if item.asset_type != context.asset_type or item.asset_type != temporal.asset_type:
             raise EvidencePackError("ASSET_TYPE_MISMATCH", "evidence asset type mismatch")
-        if item.instrument_id != context.instrument_id:
+        if item.instrument_id is not None and item.instrument_id != context.instrument_id:
             raise EvidencePackError("INSTRUMENT_MISMATCH", "evidence instrument mismatch")
         if context.currency is not None and item.currency not in {None, context.currency}:
             raise EvidencePackError("CURRENCY_MISMATCH", "evidence currency mismatch")

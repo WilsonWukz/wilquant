@@ -1,20 +1,23 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from datetime import datetime
-from decimal import Decimal
-from typing import Literal, Protocol
+from datetime import UTC, datetime
+from typing import Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from quant_lab.ai.contracts import (
     AssetType,
     CanonicalEvidenceItem,
     EvidenceClassification,
     EvidenceScalar,
+    EvidenceSemanticType,
     EvidenceSourceType,
+    FreshnessClass,
     Market,
+    canonical_unit,
 )
+from quant_lab.ai.fingerprints import fingerprint_payload
 
 
 class EvidenceResolverError(ValueError):
@@ -30,6 +33,10 @@ class DisallowedEvidenceField(EvidenceResolverError):
 
 
 class EvidenceSourceNotFound(EvidenceResolverError):
+    pass
+
+
+class TemporalMetadataUnavailable(EvidenceResolverError):
     pass
 
 
@@ -52,11 +59,25 @@ class SourceSnapshot(BaseModel):
     subject: str
     effective_at: datetime
     known_at: datetime
+    observed_at: datetime | None = None
+    market_timestamp: datetime | None = None
+    freshness_class: FreshnessClass = FreshnessClass.IMMUTABLE_HISTORICAL
+    known_delay_seconds: int | None = Field(default=None, ge=0)
     market: Market
     asset_type: AssetType
-    instrument_id: str
+    instrument_id: str | None = None
     currency: str | None = None
+    context: dict[str, object] = Field(default_factory=dict)
     values: Mapping[str, EvidenceScalar]
+
+    @field_validator("effective_at", "known_at", "observed_at", "market_timestamp")
+    @classmethod
+    def _aware_utc(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("datetime must be timezone-aware")
+        return value.astimezone(UTC)
 
 
 SourceLoader = Callable[[str], SourceSnapshot]
@@ -75,67 +96,87 @@ class ExplicitSnapshotResolver:
         *,
         source_type: EvidenceSourceType,
         field_classifications: Mapping[str, EvidenceClassification],
+        field_semantic_types: Mapping[str, EvidenceSemanticType],
         field_units: Mapping[str, str | None],
+        resolver_policy_version: str,
         loader: SourceLoader,
     ) -> None:
         self.source_type = source_type
         self._field_classifications = dict(field_classifications)
+        self._field_semantic_types = dict(field_semantic_types)
         self._field_units = dict(field_units)
+        self.resolver_policy_version = resolver_policy_version
         self._loader = loader
         self.allowed_fields = frozenset(self._field_classifications)
-
-    @staticmethod
-    def _value_type(
-        value: EvidenceScalar,
-    ) -> Literal["STRING", "INTEGER", "DECIMAL", "BOOLEAN", "NULL"]:
-        if value is None:
-            return "NULL"
-        if isinstance(value, bool):
-            return "BOOLEAN"
-        if isinstance(value, int):
-            return "INTEGER"
-        if isinstance(value, (Decimal, float)):
-            return "DECIMAL"
-        return "STRING"
+        if set(self._field_semantic_types) != set(self._field_classifications):
+            raise ValueError("semantic type policy must cover every allowed field")
 
     def resolve(self, request: EvidenceRequest) -> tuple[CanonicalEvidenceItem, ...]:
         requested = frozenset(request.fields) if request.fields else self.allowed_fields
         disallowed = requested - self.allowed_fields
         if disallowed:
-            raise DisallowedEvidenceField(
-                f"{self.source_type}: {','.join(sorted(disallowed))}"
-            )
+            raise DisallowedEvidenceField(f"{self.source_type}: {','.join(sorted(disallowed))}")
         snapshot = self._loader(request.source_id)
         missing = requested - set(snapshot.values)
         if missing:
-            raise EvidenceSourceNotFound(
-                f"{self.source_type}: missing {','.join(sorted(missing))}"
+            raise EvidenceSourceNotFound(f"{self.source_type}: missing {','.join(sorted(missing))}")
+        resolved: list[CanonicalEvidenceItem] = []
+        for field in sorted(requested):
+            unit = canonical_unit(self._field_units.get(field))
+            semantic_type = self._field_semantic_types[field]
+            value_fingerprint = fingerprint_payload(
+                {
+                    "value": snapshot.values[field],
+                    "semantic_type": semantic_type,
+                    "unit": unit,
+                }
             )
-        return tuple(
-            CanonicalEvidenceItem(
-                ref=(
-                    f"{self.source_type.value}:{snapshot.source_entity_id}:"
-                    f"{snapshot.source_version_id}:{field}"
-                ),
-                source_type=self.source_type,
-                source_entity_id=snapshot.source_entity_id,
-                source_version_id=snapshot.source_version_id,
-                field=field,
-                value=snapshot.values[field],
-                value_type=self._value_type(snapshot.values[field]),
-                unit=self._field_units.get(field),
-                classification=self._field_classifications[field],
-                subject=snapshot.subject,
-                effective_at=snapshot.effective_at,
-                known_at=snapshot.known_at,
-                market=snapshot.market,
-                asset_type=snapshot.asset_type,
-                instrument_id=snapshot.instrument_id,
-                currency=snapshot.currency,
-                content_fingerprint=snapshot.source_fingerprint,
+            ref_fingerprint = fingerprint_payload(
+                {
+                    "source_type": self.source_type,
+                    "source_id": snapshot.source_entity_id,
+                    "source_version_id": snapshot.source_version_id,
+                    "field_path": field,
+                    "source_fingerprint": snapshot.source_fingerprint,
+                    "value_fingerprint": value_fingerprint,
+                    "effective_at": snapshot.effective_at,
+                    "known_at": snapshot.known_at,
+                    "observed_at": snapshot.observed_at,
+                    "market_timestamp": snapshot.market_timestamp,
+                    "freshness_class": snapshot.freshness_class,
+                    "known_delay_seconds": snapshot.known_delay_seconds,
+                    "resolver_policy_version": self.resolver_policy_version,
+                }
             )
-            for field in sorted(requested)
-        )
+            resolved.append(
+                CanonicalEvidenceItem(
+                    ref_id=f"ev-{ref_fingerprint}",
+                    source_type=self.source_type,
+                    source_id=snapshot.source_entity_id,
+                    source_version_id=snapshot.source_version_id,
+                    field_path=field,
+                    classification=self._field_classifications[field],
+                    semantic_type=semantic_type,
+                    value=snapshot.values[field],
+                    unit=unit,
+                    subject=snapshot.subject,
+                    source_fingerprint=snapshot.source_fingerprint,
+                    value_fingerprint=value_fingerprint,
+                    effective_at=snapshot.effective_at,
+                    known_at=snapshot.known_at,
+                    observed_at=snapshot.observed_at,
+                    market_timestamp=snapshot.market_timestamp,
+                    freshness_class=snapshot.freshness_class,
+                    known_delay_seconds=snapshot.known_delay_seconds,
+                    market=snapshot.market,
+                    asset_type=snapshot.asset_type,
+                    instrument_id=snapshot.instrument_id,
+                    currency=snapshot.currency,
+                    context=snapshot.context,
+                    resolver_policy_version=self.resolver_policy_version,
+                )
+            )
+        return tuple(resolved)
 
 
 class EvidenceResolverRegistry:

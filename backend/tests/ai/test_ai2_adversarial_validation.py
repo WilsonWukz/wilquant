@@ -11,9 +11,7 @@ def test_claim_id_subject_alias_unit_spelling_and_ref_order_cannot_bypass_drift(
     pack = _pack(_item("a-new", Decimal("1.20")), _item("b-old", Decimal("1.20")))
     validator = ValidationService(subject_aliases={"600000": "SSE:600000"})
     original_claim = _fact(evidence_refs=["a-new", "b-old"])
-    first = validator.validate(
-        _candidate(original_claim), pack, origin_attempt_id="attempt-1"
-    )
+    first = validator.validate(_candidate(original_claim), pack, origin_attempt_id="attempt-1")
     prior = first.accepted_assertions[0]
 
     mutated = _fact(
@@ -74,13 +72,15 @@ def test_operand_swap_is_detected_as_drift_not_a_new_fact() -> None:
 def test_schema_invalid_assertion_is_untrusted_observation_only() -> None:
     invalid = {
         "schema_version": "ai-structured-output-v1",
-        "action_type": "RESEARCH_ANALYSIS",
+        "action_type": "RESEARCH_RECOMMENDATION",
+        "recommendation": "REVIEW_STRATEGY",
         "claims": [
             {
                 "claim_id": "claim-1",
                 "claim_type": "FACT",
+                "text": "schema invalid but observable",
                 "subject": "SSE:600000",
-                "predicate": "EQUALS",
+                "predicate": "EQ",
                 "value": "1.20",
                 "unit": "RATIO",
                 "evidence_refs": ["a-new"],
@@ -95,7 +95,7 @@ def test_schema_invalid_assertion_is_untrusted_observation_only() -> None:
         origin_attempt_id="attempt-schema-invalid",
     )
 
-    assert "SCHEMA_INVALID" in result.error_codes
+    assert "SCHEMA_INVALID_TYPE" in result.error_codes
     assert not result.accepted
     assert result.accepted_assertions == ()
     assert len(result.observations) == 1
@@ -122,12 +122,12 @@ def test_zero_denominator_is_stable_validation_error() -> None:
                 predicate="PERCENT_CHANGE",
                 value="0",
                 evidence_refs=[],
-                operand_refs=["a-new", "b-old"],
+                operand_refs=["b-old", "a-new"],
             )
         ),
         pack,
         origin_attempt_id="attempt-1",
     )
 
-    assert "DERIVED_ZERO_DENOMINATOR" in result.error_codes
+    assert "DERIVED_DIVISION_BY_ZERO" in result.error_codes
     assert not result.accepted

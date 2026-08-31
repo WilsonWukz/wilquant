@@ -620,9 +620,7 @@ class PaperRepository:
             session.expunge(model)
             return model
 
-    def list_position_lots(
-        self, paper_account_id: str
-    ) -> tuple[PaperPositionLotModel, ...]:
+    def list_position_lots(self, paper_account_id: str) -> tuple[PaperPositionLotModel, ...]:
         with Session(self.engine) as session:
             values = tuple(
                 session.scalars(
@@ -696,6 +694,14 @@ class PaperRepository:
             for value in values:
                 session.expunge(value)
             return values
+
+    def get_snapshot(self, snapshot_id: str) -> PaperAccountSnapshotModel:
+        with Session(self.engine) as session:
+            model = session.get(PaperAccountSnapshotModel, snapshot_id)
+            if model is None:
+                raise PaperError("PAPER_SNAPSHOT_NOT_FOUND", "模拟账户快照不存在")
+            session.expunge(model)
+            return model
 
     # --- ledger / audit ---
     def append_ledger(
@@ -794,9 +800,7 @@ class PaperRepository:
             session.expunge(model)
             return model
 
-    def list_risk_policies(
-        self, paper_account_id: str
-    ) -> tuple[PaperRiskPolicyModel, ...]:
+    def list_risk_policies(self, paper_account_id: str) -> tuple[PaperRiskPolicyModel, ...]:
         with Session(self.engine) as session:
             values = tuple(
                 session.scalars(
@@ -809,9 +813,7 @@ class PaperRepository:
                 session.expunge(value)
             return values
 
-    def get_latest_policy_version(
-        self, risk_policy_id: str
-    ) -> PaperRiskPolicyVersionModel:
+    def get_latest_policy_version(self, risk_policy_id: str) -> PaperRiskPolicyVersionModel:
         with Session(self.engine) as session:
             model = session.scalar(
                 select(PaperRiskPolicyVersionModel)
@@ -833,6 +835,14 @@ class PaperRepository:
             )
             if model is not None:
                 session.expunge(model)
+            return model
+
+    def get_risk_decision(self, decision_id: str) -> PaperRiskDecisionModel:
+        with Session(self.engine) as session:
+            model = session.get(PaperRiskDecisionModel, decision_id)
+            if model is None:
+                raise PaperError("RISK_DECISION_NOT_FOUND", "风控决策不存在")
+            session.expunge(model)
             return model
 
     def update_account_status(self, account_id: str, status: str) -> PaperAccountModel:
@@ -862,9 +872,7 @@ class PaperRepository:
                 or 0
             )
 
-    def get_latest_snapshot(
-        self, paper_account_id: str
-    ) -> PaperAccountSnapshotModel | None:
+    def get_latest_snapshot(self, paper_account_id: str) -> PaperAccountSnapshotModel | None:
         with Session(self.engine) as session:
             model = session.scalar(
                 select(PaperAccountSnapshotModel)
@@ -891,8 +899,8 @@ class PaperRepository:
             )
             if not include_closed:
                 statement = statement.where(PaperPositionModel.total_quantity > 0)
-            statement = statement.order_by(PaperPositionModel.instrument_id).limit(limit).offset(
-                offset
+            statement = (
+                statement.order_by(PaperPositionModel.instrument_id).limit(limit).offset(offset)
             )
             values = tuple(session.scalars(statement))
             for value in values:
@@ -913,9 +921,11 @@ class PaperRepository:
             )
             if event_type is not None:
                 statement = statement.where(PaperAuditEventModel.event_type == event_type)
-            statement = statement.order_by(
-                PaperAuditEventModel.created_at, PaperAuditEventModel.id
-            ).limit(limit).offset(offset)
+            statement = (
+                statement.order_by(PaperAuditEventModel.created_at, PaperAuditEventModel.id)
+                .limit(limit)
+                .offset(offset)
+            )
             values = tuple(session.scalars(statement))
             for value in values:
                 session.expunge(value)

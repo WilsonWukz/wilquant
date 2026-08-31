@@ -463,7 +463,7 @@ EvidencePack、ValidationResult、ResearchCaseDocument、RetrievalSnapshot 创�
 只有 Resolver allowlist、EvidencePack、双 cutoff、claims、grounding、derived recompute、immutable drift、untrusted observation、ResearchGate、FTS retrieval、snapshot、append-only、restart recovery、migration matrix、Ruff、mypy、完整 backend/frontend gate 全部通过，才可声明：
 
 ```text
-AI-2 EVIDENCE & TEMPORAL VALIDATION STABLE
+AI-2 IMPLEMENTED — CONTRACT CLOSURE IN PROGRESS
 STOP BEFORE AI-3 PROVIDER ISOLATION
 ```
 
@@ -471,7 +471,7 @@ STOP BEFORE AI-3 PROVIDER ISOLATION
 
 ## 19. 实施与验收结果
 
-AI-2 已由 Alembic `20260830_0015` 线性接在 `20260827_0014` 后完成。实现包含四张 append-only 历史表、一个 derived FTS5 virtual table、11 类显式 resolver policy、EvidencePack、六层 validation、ValidationResult recorder、ResearchGate、ResearchCaseDocument、temporal-safe retrieval、RetrievalSnapshot、三个只读 provenance API 与启动时 FTS rebuild。
+AI-2 已由 Alembic `20260830_0015` 线性接在 `20260827_0014` 后完成首轮实施。当前正收口 CanonicalEvidenceItem、11 类 concrete resolver、ResearchClaim/schema findings 和 freshness 合同；未完成本轮全门禁前不得标记 stable。
 
 2026-08-31 完整执行 `scripts/test.ps1`，结果为：
 

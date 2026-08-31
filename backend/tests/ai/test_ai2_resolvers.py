@@ -30,7 +30,7 @@ def _snapshot(source_id: str) -> SourceSnapshot:
         values={
             "row_count": 100,
             "max_timestamp": "2024-01-31T07:00:00Z",
-            "quality_status": "PASS",
+            "status": "PUBLISHED",
         },
     )
 
@@ -66,12 +66,13 @@ def test_dataset_resolver_builds_canonical_items_only_for_requested_fields() -> 
         EvidenceRequest(
             source_type=EvidenceSourceType.DATASET_VERSION,
             source_id="dataset-1",
-            fields=("row_count", "quality_status"),
+            fields=("row_count", "status"),
         )
     )
 
-    assert [item.field for item in items] == ["quality_status", "row_count"]
-    assert all(item.classification is EvidenceClassification.FACT for item in items)
+    assert [item.field for item in items] == ["row_count", "status"]
+    assert items[0].classification is EvidenceClassification.FACT
+    assert items[1].classification is EvidenceClassification.SYSTEM_STATE
     assert all(item.content_fingerprint == "a" * 64 for item in items)
 
 
