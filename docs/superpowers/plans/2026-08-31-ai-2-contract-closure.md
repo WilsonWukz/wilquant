@@ -4,9 +4,24 @@
 
 **Goal:** 关闭 AI-2 的 evidence、concrete resolver、claim/schema 和 freshness 五类合同阻塞，在不引入 Provider 或交易写路径的前提下恢复 stable 状态。
 
-**Architecture:** 保持现有 AI-2 append-only JSON persistence 和 retrieval 设计，不新增 migration。由 Core resolver 从现有 SQLAlchemy domain repository/service 产生完整、可指纹化的 `CanonicalEvidenceItem`；validator 使用正式 semantic type、predicate 和 freshness policy 执行六层确定性验证。所有新行为按 RED→GREEN 小步实施，最多两个 forward commits。
+**Architecture:** 保持现有 AI-2 append-only JSON persistence 和 retrieval 设计，不新增 migration。由 Core resolver 从现有 SQLAlchemy domain repository/service 产生完整、可指纹化的 `CanonicalEvidenceItem`；validator 使用正式 semantic type、predicate 和 freshness policy 执行六层确定性验证。所有新行为按 RED→GREEN 小步实施，优先控制为两个 forward commits；数量不阻塞必要修复。
 
 **Tech Stack:** Python 3.12、Pydantic v2、SQLAlchemy 2、SQLite/Alembic、pytest、Ruff、mypy、PowerShell quality gate。
+
+## 当前执行状态（2026-09-09）
+
+下方逐步命令保留为历史复现清单，不用其模板复选框推断当前进度。实际执行状态以本表及 `docs/ai-2-contract-closure-acceptance.md` 为准。
+
+| 工作包 | 当前状态 |
+|---|---|
+| CanonicalEvidenceItem / Core-derived ref / context / policy | 已实现并通过局部回归 |
+| 11 类具体 Resolver / TEMP domain / 无交易写副作用 | 已实现并通过局部回归 |
+| Claim / Grounding / Schema / immutable observations | 已实现并通过局部回归 |
+| Freshness / 双 cutoff / ResearchGate 优先级 | 已实现并通过局部回归 |
+| 最终 scripts/test.ps1 | 已完成，退出码 0；后端 734 / AI 206；前端 10 文件 / 48 测试；全部静态检查与构建通过 |
+| 最终文档状态与前向提交 | 文档已同步 STABLE；与最终已验收代码一起正常前向提交，不进入 AI-3 |
+
+续接新增回归：`backend/tests/ai/test_ai2_final_acceptance.py`。修复范围、先失败再通过的证据、迁移/重启/FTS 兼容索引及验收代码校验值详见验收记录。
 
 ---
 
@@ -132,7 +147,7 @@ Expected: 旧 107 项与新 closure tests 全部 PASS。
 
 - [ ] **Step 1: 同步真实合同**
 
-只在 AI shard、Ruff、mypy 通过后，将状态从 `CONTRACT CLOSURE IN PROGRESS` 恢复为 `AI-2 EVIDENCE & TEMPORAL VALIDATION STABLE`，记录 canonical field、8 predicates、4 freshness classes/requirements、11 concrete domains、stable schema codes 与 no-migration 决策。
+只有最终可执行内容的完整 `scripts/test.ps1` 门禁退出码为 0，且五类合同核对全部通过后，才能将状态从 `CONTRACT CLOSURE IN PROGRESS` 恢复为 `AI-2 EVIDENCE & TEMPORAL VALIDATION STABLE`。记录 canonical field、8 predicates、4 freshness classes/requirements、11 concrete domains、stable schema codes 与 no-migration 决策；纯 Markdown 后续同步不要求重复完整门禁。
 
 - [ ] **Step 2: 运行静态门禁**
 
@@ -166,7 +181,15 @@ Run: `git status --short`
 
 Run: `git rev-list --left-right --count origin/dev...dev`
 
-Expected: working tree clean；本轮不超过 2 个新 commit；不 push。
+Expected: working tree clean；优先将本轮收口控制在已有提交加 0–1 个必要提交，但不能为守住数量而放弃必要修复；不 push、amend、reset、rebase 或改写历史。
+
+## 2026-09-09 续接验收
+
+- 起点：`59579a4787f0b66200ed49a0a4428a75b6af7e37`，`dev`，工作树干净。
+- 上次门禁在 datasets-b 进程异常终止，退出码 `1073807364`，结果不完整，不能算 PASS。
+- 正在串行执行补跑；测试期间仅同步 Markdown，不修改可执行内容。
+- 只读合同核对发现：Grounding 缺少单位匹配；Risk `freeze_required` 投影使用了不存在的 reason code；研究关联可变时间与旧回测完成时间混淆；报告完整指纹包含已延后的 Journal 内容；ResearchGate 对未列举的 ERROR 与缺证据混合时优先级不正确。
+- 门禁结束后按相关回归先复现、最小修复、最终统一完整门禁的顺序处理，不进入 AI-3。
 
 ## Self-review
 

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time
 from pathlib import Path
@@ -67,7 +67,7 @@ class SourceFieldPolicy:
     classifications: Mapping[str, EvidenceClassification]
     semantic_types: Mapping[str, EvidenceSemanticType]
     units: Mapping[str, str | None]
-    resolver_policy_version: str = "1"
+    resolver_policy_version: str = "2"
 
     @property
     def fields(self) -> frozenset[str]:
@@ -403,8 +403,9 @@ def _source_snapshot(
 class _DomainSnapshotLoaders:
     """Eleven explicit read-only adapters over existing domain repositories/services."""
 
-    def __init__(self, engine: Engine, artifact_root: Path) -> None:
+    def __init__(self, engine: Engine, artifact_root: Path, clock: Callable[[], datetime]) -> None:
         self.engine = engine
+        self.clock = clock
         self.datasets = DatasetRepository(engine, run_mode=RunMode.RESEARCH)
         self.runs = BacktestRepository(engine)
         self.research = ResearchRepository(engine)
@@ -611,7 +612,14 @@ class _DomainSnapshotLoaders:
             source_fingerprint=fingerprint,
             subject=f"RESEARCH_EXPERIMENT:{source_id}",
             effective_at=max(_date_utc(run.end_date) for run in runs),
-            known_at=_utc(experiment.updated_at),
+            # Current mutable links have no revision history. This projection is
+            # first known when Core observes it, never at an old backtest date.
+            known_at=max(
+                _utc(self.clock()),
+                _utc(experiment.updated_at),
+                *(_utc(link.created_at) for link in links),
+                *(_utc(run.completed_at or run.created_at) for run in runs),
+            ),
             market=identity["market"],
             asset_type=identity["asset_type"],
             currency=identity["currency"],
@@ -649,7 +657,12 @@ class _DomainSnapshotLoaders:
             source_fingerprint=fingerprint,
             subject=f"RESEARCH_COMPARISON:{source_id}",
             effective_at=max(_date_utc(run.end_date) for run in runs),
-            known_at=max(_utc(run.completed_at or run.created_at) for run in runs),
+            known_at=max(
+                _utc(self.clock()),
+                _utc(experiment.updated_at),
+                *(_utc(link.created_at) for link in links),
+                *(_utc(run.completed_at or run.created_at) for run in runs),
+            ),
             market=identity["market"],
             asset_type=identity["asset_type"],
             currency=identity["currency"],
@@ -700,14 +713,22 @@ class _DomainSnapshotLoaders:
         report = self.reports.run_report(run, strategy_identity)
         values = {
             "run_ids": [source_id],
-            "report_fingerprint": report["report_fingerprint"],
             "metrics": report.get("metrics"),
             "diagnostics": report.get("diagnostics"),
         }
+        projection_fingerprint = fingerprint_payload(
+            {
+                "projection_policy_version": "2",
+                "run_input_fingerprint": run.run_input_fingerprint,
+                "artifact_integrity": report["artifact_integrity"],
+                "values": values,
+            }
+        )
+        values["report_fingerprint"] = projection_fingerprint
         return _source_snapshot(
             source_id=source_id,
-            source_version_id=str(report["report_fingerprint"]),
-            source_fingerprint=str(report["report_fingerprint"]),
+            source_version_id=projection_fingerprint,
+            source_fingerprint=projection_fingerprint,
             subject=f"RESEARCH_REPORT:{source_id}",
             effective_at=identity["effective_at"],
             known_at=_utc(run.completed_at or run.created_at),
@@ -810,18 +831,20 @@ class _DomainSnapshotLoaders:
         with Session(self.engine) as session:
             payload = json.loads(paper.market_data_snapshot_json)
             identity = _snapshot_identity(session, payload)
-            account_snapshot = json.loads(decision.account_snapshot_json)
             market_context = json.loads(decision.market_context_json)
+            evaluated_metrics = market_context.get("evaluated_metrics")
+            if not isinstance(evaluated_metrics, dict):
+                raise EvidenceSourceNotFound("persisted risk evaluation metrics are unavailable")
             values = {
                 "decision": decision.decision,
                 "reason_codes": json.loads(decision.reason_codes_json),
                 "risk_policy_version": decision.risk_policy_version,
                 "risk_policy_fingerprint": policy.policy_fingerprint,
-                "evaluated_metrics": {
-                    "account": account_snapshot,
-                    "market": market_context,
-                },
-                "freeze_required": "FREEZE_REQUIRED" in json.loads(decision.reason_codes_json),
+                "evaluated_metrics": evaluated_metrics,
+                "freeze_required": bool(
+                    {"DAILY_LOSS_LIMIT", "DRAWDOWN_LIMIT"}
+                    & set(json.loads(decision.reason_codes_json))
+                ),
             }
             fingerprint = fingerprint_payload(
                 {"decision": source_id, "policy": policy.policy_fingerprint, "values": values}
@@ -842,9 +865,12 @@ class _DomainSnapshotLoaders:
 
 
 def build_domain_resolver_registry(
-    *, engine: Engine, artifact_root: Path
+    *,
+    engine: Engine,
+    artifact_root: Path,
+    clock: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> EvidenceResolverRegistry:
-    loaders = _DomainSnapshotLoaders(engine, artifact_root)
+    loaders = _DomainSnapshotLoaders(engine, artifact_root, clock)
     return build_supported_resolver_registry(
         {
             EvidenceSourceType.DATASET_VERSION: loaders.dataset_version,

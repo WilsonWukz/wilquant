@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.12、Pydantic v2、SQLAlchemy 2、Alembic、SQLite/FTS5、FastAPI、pytest、Ruff、mypy、PowerShell。
 
-**Execution Status:** AI-2 IMPLEMENTED — CONTRACT CLOSURE IN PROGRESS；停止在 AI-3 之前。
+**Execution Status:** AI-2 EVIDENCE & TEMPORAL VALIDATION STABLE；2026-09-09 完成合同收口，最终证据见 `docs/ai-2-contract-closure-acceptance.md`。下方为原始实施复现清单，历史测试数不替代当前验收。停止在 AI-3 之前。
 
 ---
 
@@ -279,7 +279,7 @@ Expected: PASS。
 
 ```python
 def test_percent_change_is_recomputed_from_ordered_operands(validator, pack) -> None:
-    claim = claim_of("PERCENT_CHANGE", value="0.20", refs=("new", "old"))
+    claim = claim_of("PERCENT_CHANGE", value="0.20", refs=("old", "new"))
     result = validator.validate(candidate(claim), pack)
     assert result.accepted
     assert result.accepted_claims[0].value == Decimal("0.20")

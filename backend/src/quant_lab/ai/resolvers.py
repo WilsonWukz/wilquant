@@ -124,6 +124,12 @@ class ExplicitSnapshotResolver:
         for field in sorted(requested):
             unit = canonical_unit(self._field_units.get(field))
             semantic_type = self._field_semantic_types[field]
+            if unit == "CURRENCY":
+                unit = canonical_unit(snapshot.currency)
+                if unit is None:
+                    raise EvidenceSourceNotFound("money evidence lacks account currency")
+            if unit is None and semantic_type is EvidenceSemanticType.RATIO:
+                unit = "RATIO"
             value_fingerprint = fingerprint_payload(
                 {
                     "value": snapshot.values[field],

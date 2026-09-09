@@ -89,7 +89,7 @@ class ResearchGate:
         codes = {finding.code for finding in findings if finding.severity is FindingSeverity.ERROR}
         if requirements.market_rules_required and evidence_context.market_rules_version is None:
             codes.add("MISSING_MARKET_RULES")
-        if codes & DETERMINISTIC_VIOLATIONS:
+        if codes & DETERMINISTIC_VIOLATIONS or codes - MISSING_OR_STALE - UNANSWERABLE:
             return GateResult(decision=GateDecision.REJECT, reason_codes=_ordered(codes))
         if codes & MISSING_OR_STALE:
             return GateResult(decision=GateDecision.WAIT_FOR_EVIDENCE, reason_codes=_ordered(codes))

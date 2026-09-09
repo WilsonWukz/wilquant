@@ -1,6 +1,6 @@
 # wilquant AI Research Copilot 架构设计
 
-- 状态：已设计；AI-1 已稳定，AI-2 `IMPLEMENTED — CONTRACT CLOSURE IN PROGRESS`，停止在 AI-3 之前
+- 状态：已设计；AI-1 已稳定，AI-2 `EVIDENCE & TEMPORAL VALIDATION STABLE`，停止在 AI-3 之前
 - 日期：2026-08-27
 - 范围：AI 研究分析、证据追溯、案例记忆、研究论点、上下文 Copilot 与草稿动作
 - 前置边界：Phase 5 PAPER、Phase 6A LIVE + Multi-Market Architecture、ADR-0002
@@ -1071,7 +1071,7 @@ AI-1 现在可独立于 6B 开始；AI-1/AI-2/AI-3 基础设施与 Phase 6 并�
 
 ## 32. 完成边界
 
-AI-1 Provenance Foundation 已稳定。AI-2 已按授权实现 EvidencePack、grounding/temporal/immutable validation、ResearchGate、hard filters + structured score + SQLite FTS retrieval 与不可变 snapshots，并完成全量验收；未调用 provider、未安装 LLM SDK、未做 chat/UI/recommendation execution。当前已停止，不进入 AI-3。
+AI-1 Provenance Foundation 已稳定。AI-2 已按授权实现 EvidencePack、grounding/temporal/immutable validation、ResearchGate、hard filters + structured score + SQLite FTS retrieval 与不可变 snapshots，并完成五类合同核对及最终完整门禁（后端 734 / AI 206，前端 48，退出码 0）。详细证据见 `docs/ai-2-contract-closure-acceptance.md`。未调用 provider、未安装 LLM SDK、未做 chat/UI/recommendation execution，不进入 AI-3。
 
 预期状态：
 

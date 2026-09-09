@@ -97,8 +97,8 @@ def test_evidence_item_is_frozen_and_decimal_safe() -> None:
 def test_policy_is_fixed_and_bounded() -> None:
     policy = AI2Policy()
 
-    assert policy.evidence_policy_version == "ai-evidence-v1"
-    assert policy.validation_policy_version == "ai-validation-v1"
+    assert policy.evidence_policy_version == "ai-evidence-v2"
+    assert policy.validation_policy_version == "ai-validation-v2"
     assert policy.retrieval_policy_version == "ai-retrieval-v1"
     assert policy.max_evidence_items == 128
     assert policy.max_evidence_bytes == 262_144

@@ -10,10 +10,10 @@ class AI2Policy(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    evidence_policy_version: str = "ai-evidence-v1"
-    validation_policy_version: str = "ai-validation-v1"
+    evidence_policy_version: str = "ai-evidence-v2"
+    validation_policy_version: str = "ai-validation-v2"
     retrieval_policy_version: str = "ai-retrieval-v1"
-    research_gate_policy_version: str = "ai-research-gate-v1"
+    research_gate_policy_version: str = "ai-research-gate-v2"
     realtime_max_age_seconds: int = 30
     max_evidence_items: int = 128
     max_evidence_bytes: int = 262_144

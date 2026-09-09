@@ -84,7 +84,9 @@ class EvidencePackService:
             raise EvidencePackError("INSTRUMENT_MISMATCH", "evidence instrument mismatch")
         if context.currency is not None and item.currency not in {None, context.currency}:
             raise EvidencePackError("CURRENCY_MISMATCH", "evidence currency mismatch")
-        if contains_forbidden_secret_material({item.field: item.value}):
+        if contains_forbidden_secret_material(
+            {"value": item.value, "context": item.context, item.field: item.value}
+        ):
             raise EvidencePackError(
                 "SECRET_MATERIAL_FORBIDDEN", "evidence contains forbidden secret-shaped field"
             )

@@ -14,6 +14,7 @@ from pydantic import (
     model_validator,
 )
 
+from quant_lab.ai.configuration import contains_forbidden_secret_material
 from quant_lab.ai.fingerprints import fingerprint_payload
 from quant_lab.market_data.fingerprints import canonical_json_bytes
 
@@ -326,7 +327,7 @@ class CanonicalEvidenceItem(BaseModel):
         disallowed = set(value) - _CONTEXT_KEYS
         if disallowed:
             raise ValueError("evidence context key is not allowlisted")
-        if _context_contains_secret_key(value):
+        if _context_contains_secret_key(value) or contains_forbidden_secret_material(value):
             raise ValueError("secret-shaped evidence context is forbidden")
         if len(value) > 8 or _context_depth(value) > 2:
             raise ValueError("evidence context exceeds structural limits")

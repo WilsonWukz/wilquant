@@ -263,21 +263,23 @@ def domain_registry(tmp_path: Path):
                 PaperRiskDecisionModel(
                     id="rd1",
                     order_intent_id="intent1",
-                    decision="APPROVED",
-                    reason_codes_json='["WITHIN_LIMITS"]',
+                    decision="APPROVE",
+                    reason_codes_json="[]",
                     risk_policy_id="rp1",
                     risk_policy_version_id="rpv1",
                     risk_policy_version=1,
                     account_snapshot_json='{"cash":"90000","gross_exposure":"10000"}',
                     position_snapshot_json="null",
-                    market_context_json='{"estimated_notional":"1000"}',
+                    market_context_json='{"evaluated_metrics":{"estimated_notional":"1000"}}',
                     evaluated_at=KNOWN,
                 ),
             ]
         )
         session.commit()
 
-    registry = build_domain_resolver_registry(engine=engine, artifact_root=runtime)
+    registry = build_domain_resolver_registry(
+        engine=engine, artifact_root=runtime, clock=lambda: KNOWN
+    )
     try:
         yield registry
     finally:
@@ -379,7 +381,7 @@ def test_each_supported_source_resolves_from_real_domain_records(
     assert first.source_fingerprint == second.source_fingerprint
     assert first.value_fingerprint == second.value_fingerprint
     assert first.ref_id == second.ref_id
-    assert first.resolver_policy_version == "1"
+    assert first.resolver_policy_version == "2"
     assert first.known_at.tzinfo is not None
     assert first.effective_at.tzinfo is not None
 

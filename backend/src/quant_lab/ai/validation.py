@@ -462,7 +462,7 @@ class ValidationService:
                 ClaimPredicate.PERCENT_CHANGE,
             }
             if claim.claim_type is ClaimType.FACT and not (
-                claim.evidence_refs or claim.operand_refs
+                claim.operand_refs if derived else claim.evidence_refs
             ):
                 findings.append(
                     _finding(
@@ -508,9 +508,42 @@ class ValidationService:
                     for ref in sorted(set(missing))
                 )
                 continue
+            if derived or claim.claim_type is ClaimType.FACT:
+                compared = [
+                    items[ref] for ref in (claim.operand_refs if derived else claim.evidence_refs)
+                ]
+                units = {_canonical_unit(item.unit) for item in compared}
+                expected_unit = (
+                    "RATIO"
+                    if claim.predicate is ClaimPredicate.PERCENT_CHANGE
+                    else _canonical_unit(compared[0].unit)
+                )
+                if len(units) != 1 or _canonical_unit(claim.unit) != expected_unit:
+                    findings.append(
+                        _finding(
+                            ValidationLayer.GROUNDING,
+                            "EVIDENCE_UNIT_MISMATCH",
+                            retryable=False,
+                            claim_id=claim.claim_id,
+                        )
+                    )
+                    continue
             freshness_findings: list[ValidationFinding] = []
             for ref in sorted(set(all_refs)):
                 item = items[ref]
+                if (
+                    item.known_at > pack.temporal_context.knowledge_cutoff
+                    or item.effective_at > pack.temporal_context.market_data_cutoff
+                ):
+                    findings.append(
+                        _finding(
+                            ValidationLayer.TEMPORAL,
+                            "TEMPORAL_LEAK",
+                            retryable=False,
+                            claim_id=claim.claim_id,
+                            evidence_ref=ref,
+                        )
+                    )
                 acceptable = {
                     FreshnessRequirement.HISTORICAL_OK: set(FreshnessClass),
                     FreshnessRequirement.EOD_REQUIRED: {
@@ -677,21 +710,6 @@ class ValidationService:
                     except (InvalidOperation, ValueError):
                         grounded_value = claim.value
 
-            for ref in all_refs:
-                item = items[ref]
-                if (
-                    item.known_at > pack.temporal_context.knowledge_cutoff
-                    or item.effective_at > pack.temporal_context.market_data_cutoff
-                ):
-                    findings.append(
-                        _finding(
-                            ValidationLayer.TEMPORAL,
-                            "TEMPORAL_LEAK",
-                            retryable=False,
-                            claim_id=claim.claim_id,
-                            evidence_ref=ref,
-                        )
-                    )
             subject = _canonical_subject(claim, pack, self.subject_aliases)
             candidate_claims.append((claim, subject, grounded_value))
             accepted.append(

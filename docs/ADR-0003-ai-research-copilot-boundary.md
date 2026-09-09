@@ -1,6 +1,6 @@
 # ADR-0003：AI Research Copilot 信任与推理边界
 
-- 状态：已批准；AI-1 已验收，AI-2 `IMPLEMENTED — CONTRACT CLOSURE IN PROGRESS`
+- 状态：已批准；AI-1 已验收，AI-2 `EVIDENCE & TEMPORAL VALIDATION STABLE`
 - 日期：2026-08-27
 - 决策范围：研究 AI 的证据、推理、权限、provider 隔离、记忆与动作边界
 - 前置决策：ADR-0002 ExecutionGateway 与 Multi-Market 执行边界
@@ -229,7 +229,7 @@ AI-8 Final AI Acceptance
 
 AI-2 将六层 deterministic validation、ResearchGate 与 `hard filters -> structured score -> SQLite FTS -> deterministic rank` 提前到 Provider 之前完成。`ResearchCaseDocument` 是 durable retrieval input，FTS 是可重建 derived index，`RetrievalSnapshot` 是 durable result；FTS rowid 或内部 bm25 状态不构成 provenance。
 
-实施状态：AI-2 已于 2026-08-31 完成首轮实施，当前正收口 evidence、concrete resolver、claim/schema 与 freshness 合同，状态为 `AI-2 IMPLEMENTED — CONTRACT CLOSURE IN PROGRESS`。当前停止在 AI-3 之前，本 ADR 不因此授权任何 Provider、模型调用、AI UI 或交易写操作。
+实施状态：AI-2 已于 2026-08-31 完成首轮实施，并于 2026-09-09 完成 evidence、concrete resolver、claim/schema 与 freshness 合同收口。最终完整门禁退出码 0：后端 734 项（AI 206 项）、前端 10 文件 / 48 项、Ruff、mypy、TypeScript/Vite 均通过。状态为 `AI-2 EVIDENCE & TEMPORAL VALIDATION STABLE`。详细合同与测试证据见 `docs/ai-2-contract-closure-acceptance.md`。停止在 AI-3 之前，本 ADR 不因此授权任何 Provider、模型调用、AI UI 或交易写操作。
 
 ## 本 ADR 不授权
 

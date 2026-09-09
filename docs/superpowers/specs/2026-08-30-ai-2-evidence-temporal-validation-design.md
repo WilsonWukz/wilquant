@@ -135,13 +135,13 @@ field_path
 semantic_type
 classification             # FACT / USER_NOTE / DERIVED_METRIC / SYSTEM_STATE
 source_fingerprint
-canonical_value
+value                     # canonical JSON 序列化
 value_fingerprint
 observed_at?
-effective_at?
-known_at?
+effective_at              # 必须为 aware UTC
+known_at                  # 必须为 aware UTC
 market_timestamp?
-freshness_class?           # IMMUTABLE_HISTORICAL / EOD / DELAYED / REALTIME
+freshness_class            # IMMUTABLE_HISTORICAL / EOD / DELAYED / REALTIME
 known_delay_seconds?
 context
 resolver_policy_version
@@ -155,22 +155,22 @@ resolver_policy_version
 
 ## 5. Resolver registry 与来源范围
 
-`EvidenceResolverRegistry` 只接受显式注册的 `EvidenceResolver`。Resolver 输入为 source id、requested fields、TemporalContext 和 EvidenceContext，输出纯 CanonicalEvidenceItem，不返回 ORM。
+`EvidenceResolverRegistry` 只接受显式注册的 `EvidenceResolver`。`EvidenceRequest` 仅接受 source type、source id、requested fields，不能传 source payload、引用 identity 或指纹。Resolver 输出纯 CanonicalEvidenceItem，不返回 ORM；随后 `EvidencePackService.freeze` 使用 TemporalContext 和 EvidenceContext 执行截止日及市场、资产、币种约束。
 
 ### 5.1 SUPPORTED
 
 | Source | 稳定 identity/fingerprint | effective_at | known_at | 主要 classification |
 |---|---|---|---|---|
 | `DATASET_VERSION` | publication fingerprint | `max_timestamp` | `published_at` | counts、time range、quality、schema；FACT |
-| `MARKET_DATA_SNAPSHOT` | snapshot fingerprint | dataset `max_timestamp` | max(profile updated、dataset/calendar published) | versions/fingerprints/quality；FACT/SYSTEM_STATE |
+| `MARKET_DATA_SNAPSHOT` | 已冻结 snapshot fingerprint | 冻结 dataset `max_timestamp` | 持有冻结 JSON 的 run/session `created_at` | versions/fingerprints；FACT/SYSTEM_STATE；不读取 Profile 最新绑定 |
 | `STRATEGY_VERSION` | strategy fingerprint | `created_at` | `created_at` | type/version/fingerprint/spec；FACT/USER_NOTE |
 | `BACKTEST_RUN` | run input + artifact hashes | dataset max timestamp | `completed_at` | status/config identity/metrics；FACT/DERIVED_METRIC |
-| `RESEARCH_EXPERIMENT` | canonical current snapshot | latest linked cutoff或 updated time | `updated_at` | status/tags 为 SYSTEM_STATE，hypothesis 为 USER_NOTE |
-| `RESEARCH_COMPARISON` | inputs + resolver policy | max linked cutoff | max linked run/experiment known time | comparability/deltas；DERIVED_METRIC |
+| `RESEARCH_EXPERIMENT` | canonical current snapshot | latest linked cutoff | Core 当前投影观察时间与领域已知时间的最大值 | status/tags 为 SYSTEM_STATE，hypothesis 为 USER_NOTE |
+| `RESEARCH_COMPARISON` | inputs + resolver policy | max linked cutoff | Core 当前投影观察时间与领域已知时间的最大值 | comparability/deltas；DERIVED_METRIC |
 | `RESEARCH_DIAGNOSTIC` | run/artifacts + policy | run dataset cutoff | run/artifact known time | bounded counts/ratios；DERIVED_METRIC |
-| `RESEARCH_REPORT` | bounded projection fingerprint | underlying cutoff | max underlying known time | metrics/diagnostics 为 DERIVED_METRIC，prose 为 USER_NOTE |
-| `PAPER_SESSION` | canonical observed snapshot | `updated_at` | `updated_at` | status/session/config identity；SYSTEM_STATE |
-| `PAPER_ACCOUNT_SNAPSHOT` | canonical row fingerprint | `created_at` | `created_at` | cash/equity/exposure/PnL；FACT/SYSTEM_STATE |
+| `RESEARCH_REPORT` | 受限确定性投影 + artifact identity + projection policy fingerprint | underlying cutoff | run 完成时间 | 仅 metrics/diagnostics；Journal 和自由文本不进入该投影指纹 |
+| `PAPER_SESSION` | canonical observed snapshot | 冻结 dataset `max_timestamp` | `updated_at` | status/session/config identity；SYSTEM_STATE |
+| `PAPER_ACCOUNT_SNAPSHOT` | canonical row fingerprint | `session_date` 的保守 UTC 日末截止上界 | `created_at` | cash/equity/exposure/PnL；FACT/SYSTEM_STATE |
 | `RISK_DECISION` | decision + policy/input snapshot | `evaluated_at` | `evaluated_at` | decision/reasons/policy；FACT/SYSTEM_STATE |
 
 ResearchExperiment hypothesis、ResearchReport prose 和其他研究文字始终为 `USER_NOTE`，不能支持 FACT claim。
@@ -230,33 +230,34 @@ claim_id
 claim_type                 # FACT / INFERENCE / HYPOTHESIS
 text
 evidence_refs[]
-subject?
-predicate?                 # EQ/NE/GT/GTE/LT/LTE/DELTA/PERCENT_CHANGE
-value?
+subject
+predicate                  # EQ/NE/GT/GTE/LT/LTE/DELTA/PERCENT_CHANGE
+value                      # 字段必须出现，允许 null
 unit?
 uncertainty?
+recommendation?
 ```
 
-FACT 必须引用 pack ref 并可确定性验证；INFERENCE 必须有 refs，其结构化事实部分仍需 ground；HYPOTHESIS 可以无 evidence，但不得伪装为 FACT；USER_NOTE 不能支持 FACT；candidate 只能引用 pack 中已有 ref。
+FACT 必须引用 pack ref 并可确定性验证；INFERENCE 必须有 refs，但其推论和自由文本不获得真实性证明，确定性事实应单独表示为 FACT；HYPOTHESIS 可以无 evidence，但不得伪装为 FACT；USER_NOTE 不能支持 FACT；candidate 只能引用 pack 中已有 ref。任何 claim 使用 DELTA/PERCENT_CHANGE 都由 Core 重算。uncertainty 仅为 LOW/MEDIUM/HIGH 标签，不是校准概率或资金管理输入。
 
 ## 9. GroundingPolicy 与 predicates
 
-`GroundingPolicyVersion=1` 固定：COUNT/INTEGER exact；CURRENCY/MONEY 使用 Decimal absolute tolerance `0.01`；RATIO 使用 absolute `1e-8`、relative `1e-6`；NUMBER 使用 absolute `1e-9`、relative `1e-6`；ENUM/STRING/BOOLEAN canonical exact。调用方和 candidate 不能传 tolerance。
+`ai-validation-v2` 保留既有容差：COUNT/INTEGER exact；MONEY 使用 Decimal absolute tolerance `0.01`；RATIO 使用 absolute `1e-8`、relative `1e-6`；NUMBER 使用 absolute `1e-9`、relative `1e-6`；ENUM/STRING/BOOLEAN exact。调用方和 candidate 不能传 tolerance。FACT 的 claim 单位须与 evidence 的 canonical unit 相同；派生 operands 单位须相同，DELTA 保留原单位，PERCENT_CHANGE 输出 RATIO。人民币别名可归一化为 CNY，但不能将 CNY 与 USD 等价或自动 FX。金额 Resolver 将内部 CURRENCY policy 映射为正式账户币种，不输出占位单位。
 
 `DELTA` 和 `PERCENT_CHANGE` 必须恰好引用两个有序 operand refs，由 Core 计算：
 
 ```text
 DELTA = operand_0 - operand_1
-PERCENT_CHANGE = (operand_0 - operand_1) / operand_1
+PERCENT_CHANGE = (operand_1 - operand_0) / abs(operand_0)  # old_ref, new_ref
 ```
 
-Grounding findings 至少包括 `EVIDENCE_REF_NOT_FOUND / EVIDENCE_VALUE_MISMATCH / UNSUPPORTED_FACT / INFERENCE_WITHOUT_EVIDENCE / INVALID_FACT_TYPE / DUPLICATE_CLAIM_ID / DERIVED_OPERANDS_INVALID`。
+稳定 findings 包括 `EVIDENCE_REF_NOT_FOUND / EVIDENCE_VALUE_MISMATCH / EVIDENCE_UNIT_MISMATCH / FACT_EVIDENCE_REQUIRED / INFERENCE_EVIDENCE_REQUIRED / SEMANTIC_PREDICATE_NOT_SUPPORTED / DUPLICATE_CLAIM_ID / DERIVED_OPERANDS_INVALID / DERIVED_DIVISION_BY_ZERO`。PERCENT_CHANGE 的 old operand 为零时拒绝，不由模型解释。
 
 ## 10. 六层 Validation Pipeline
 
-顺序固定且不可跳过：Syntax、Schema、Semantic、Grounding、Temporal、Immutable Fact。前一层存在 ERROR 时，不运行后续接受性校验。Finding 保存 `layer / code / severity / claim_id? / evidence_ref? / message_safe / retryable`。只有六层全部完成且 ERROR 数为零，candidate 才能 `ACCEPTED`。
+接受条件覆盖 Syntax、Schema、Semantic、Grounding、Temporal、Immutable Fact 六层，任一 ERROR 都禁止接受。Syntax/Schema 失败立即结束接受路径；其余层可保留多个诊断 finding（包括 retry drift），但不允许后续成功覆盖此前 ERROR。双 cutoff 不被 freshness 过期短路。Finding 保存 `layer / code / severity / claim_id? / evidence_ref? / field_path? / message_safe / retryable`。只有适用六层检查全部完成且 ERROR 数为零，candidate 才能 `ACCEPTED`；失败结果的 accepted_assertions 永远为空。
 
-Syntax 只接受标准 JSON，不从 Markdown code fence 猜测修复。非法 JSON 返回 `SYNTAX_INVALID_JSON`。Pydantic 错误映射为 `SCHEMA_MISSING_FIELD / SCHEMA_INVALID_TYPE / SCHEMA_INVALID_ENUM`，外部结果不包含完整 traceback 或敏感 payload。
+Syntax 只接受标准 JSON，不从 Markdown code fence 猜测修复。非法 JSON 返回 `SYNTAX_INVALID`。Pydantic 错误映射为 `SCHEMA_MISSING_FIELD / SCHEMA_INVALID_TYPE / SCHEMA_INVALID_ENUM`，外部结果不包含完整 traceback 或敏感 payload。
 
 SemanticValidator 检查空 recommendation、duplicate claim、FACT/INFERENCE 证据约束和 action allowlist。以下动作及等价别名一律 `FORBIDDEN_AI_AUTHORITY`、non-retryable：
 
@@ -463,7 +464,7 @@ EvidencePack、ValidationResult、ResearchCaseDocument、RetrievalSnapshot 创�
 只有 Resolver allowlist、EvidencePack、双 cutoff、claims、grounding、derived recompute、immutable drift、untrusted observation、ResearchGate、FTS retrieval、snapshot、append-only、restart recovery、migration matrix、Ruff、mypy、完整 backend/frontend gate 全部通过，才可声明：
 
 ```text
-AI-2 IMPLEMENTED — CONTRACT CLOSURE IN PROGRESS
+AI-2 EVIDENCE & TEMPORAL VALIDATION STABLE
 STOP BEFORE AI-3 PROVIDER ISOLATION
 ```
 
@@ -471,9 +472,9 @@ STOP BEFORE AI-3 PROVIDER ISOLATION
 
 ## 19. 实施与验收结果
 
-AI-2 已由 Alembic `20260830_0015` 线性接在 `20260827_0014` 后完成首轮实施。当前正收口 CanonicalEvidenceItem、11 类 concrete resolver、ResearchClaim/schema findings 和 freshness 合同；未完成本轮全门禁前不得标记 stable。
+AI-2 已由 Alembic `20260830_0015` 线性接在 `20260827_0014` 后完成首轮实施。2026-09-09 完成 CanonicalEvidenceItem、11 类 concrete resolver、ResearchClaim/schema findings 和 freshness 合同收口；最终完整门禁退出码 0，后端 734 项（AI 206 项）、前端 10 文件 / 48 项、Ruff、mypy（111 文件）、TypeScript/Vite 均通过。本次没有新增 migration。真实缺口、先失败后通过的回归、版本与验收代码一致性证据见 `docs/ai-2-contract-closure-acceptance.md`。
 
-2026-08-31 完整执行 `scripts/test.ps1`，结果为：
+以下为 2026-08-31 首轮完整执行 `scripts/test.ps1` 的历史基线，不是当前测试数：
 
 - backend 635 项通过，其中 AI shard 107 项；
 - AI-2 adversarial、migration matrix、append-only、restart recovery 与 FTS rebuild tests 全部通过；
