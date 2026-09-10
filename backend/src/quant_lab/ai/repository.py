@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
+from uuid import uuid4
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, true
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
@@ -14,6 +16,7 @@ from quant_lab.ai.persistence import (
     AIEvidenceRefModel,
     AIModelConfigVersionModel,
     AIPromptTemplateVersionModel,
+    AIProviderCallBindingModel,
     AIResearchCaseDocumentModel,
     AIResearchCaseModel,
     AIRetrievalSnapshotModel,
@@ -27,6 +30,42 @@ class AIRepository:
 
     def __init__(self, engine: Engine) -> None:
         self.engine = engine
+
+    def abandon_provider_attempt(self, attempt_id: str, now_utc: datetime) -> None:
+        """Atomically retain unknown usage on restart; never release the binding reservation."""
+        with Session(self.engine) as session:
+            session.execute(text("BEGIN IMMEDIATE"))
+            attempt = session.get(AIAnalysisAttemptModel, attempt_id)
+            if attempt is None or attempt.status != "STARTED":
+                return
+            binding = session.get(AIProviderCallBindingModel, attempt_id)
+            if (
+                binding is not None
+                and session.scalar(
+                    select(AIUsageLedgerModel).where(AIUsageLedgerModel.attempt_id == attempt_id)
+                )
+                is None
+            ):
+                session.add(
+                    AIUsageLedgerModel(
+                        id=str(uuid4()),
+                        run_id=attempt.run_id,
+                        attempt_id=attempt_id,
+                        prompt_tokens=None,
+                        cached_prompt_tokens=None,
+                        completion_tokens=None,
+                        total_tokens=None,
+                        reported_cost=None,
+                        estimated_cost=None,
+                        currency=binding.currency,
+                        is_estimate=True,
+                        occurred_at=now_utc,
+                    )
+                )
+            attempt.status = "ABANDONED"
+            attempt.failure_code = "PROVIDER_RESULT_UNKNOWN"
+            attempt.completed_at = now_utc
+            session.commit()
 
     def find_prompt_template_by_fingerprint(
         self, fingerprint: str
@@ -86,9 +125,7 @@ class AIRepository:
                 session.expunge(model)
             return model
 
-    def find_research_case_by_fingerprint(
-        self, fingerprint: str
-    ) -> AIResearchCaseModel | None:
+    def find_research_case_by_fingerprint(self, fingerprint: str) -> AIResearchCaseModel | None:
         with Session(self.engine) as session:
             model = session.scalar(
                 select(AIResearchCaseModel).where(AIResearchCaseModel.fingerprint == fingerprint)
@@ -207,13 +244,15 @@ class AIRepository:
             session.expunge(model)
             return model
 
-    def list_started_attempts(self, run_id: str) -> tuple[AIAnalysisAttemptModel, ...]:
+    def list_started_attempts(
+        self, run_id: str | None = None
+    ) -> tuple[AIAnalysisAttemptModel, ...]:
         with Session(self.engine) as session:
             models = tuple(
                 session.scalars(
                     select(AIAnalysisAttemptModel)
                     .where(
-                        AIAnalysisAttemptModel.run_id == run_id,
+                        (AIAnalysisAttemptModel.run_id == run_id) if run_id is not None else true(),
                         AIAnalysisAttemptModel.status == "STARTED",
                     )
                     .order_by(AIAnalysisAttemptModel.attempt_number)
@@ -468,9 +507,7 @@ class AIRepository:
                 session.expunge(model)
             return model
 
-    def add_retrieval_snapshot(
-        self, model: AIRetrievalSnapshotModel
-    ) -> AIRetrievalSnapshotModel:
+    def add_retrieval_snapshot(self, model: AIRetrievalSnapshotModel) -> AIRetrievalSnapshotModel:
         with Session(self.engine) as session:
             session.add(model)
             session.commit()

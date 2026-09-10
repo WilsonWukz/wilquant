@@ -4,7 +4,7 @@
 
 wilquant 是覆盖行情数据、策略回测、研究分析、AI 证据校验和 PAPER 模拟执行的本地模块化单体。现有运行能力以 CN A-share 为主，领域合同已为 CN/US 严格隔离的 multi-market 演进保留明确边界。
 
-当前系统没有 Broker、LIVE execution、真实 credential、真实账户、真实资金授权、AI Provider Host 或模型调用。AI-1 provenance foundation 已稳定；AI-2 当前状态为 `AI-2 EVIDENCE & TEMPORAL VALIDATION STABLE`，仍是无模型确定性 Core。合同核对、最终门禁与回归证据见 `docs/ai-2-contract-closure-acceptance.md`；停止在 AI-3 之前。
+当前系统没有 Broker、LIVE execution、真实账户或真实资金授权。AI-1/AI-2 已稳定；AI-3 新增可选的独立 Provider Host、authenticated localhost IPC、Credential Manager 边界、通用兼容 adapter 与调用审计，已通过最终完整验收（后端 823 / AI 295、前端 48，脚本退出码 0）。Core 仍控制确定性证据和验证，Host 不访问数据库或执行领域。AI-2 历史验收见 `docs/ai-2-contract-closure-acceptance.md`；AI-3 设计与运维分别见 `docs/superpowers/specs/2026-09-10-ai-3-provider-isolation-design.md`、`docs/ai-3-provider-operations.md`。停止在 AI-4 之前。
 
 ## 当前系统边界
 

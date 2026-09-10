@@ -9,6 +9,7 @@ description = "Local foundation for a personal A-share quantitative research lab
 readme = "README.md"
 requires-python = ">=3.11,<3.14"
 dependencies = [
+  "httpx>=0.28,<1",
   "alembic>=1.14,<2",
   "duckdb>=1.2,<2",
   "fastapi>=0.115,<1",

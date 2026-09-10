@@ -21,6 +21,9 @@ data/parquet/
 imports/staging/
 logs/
 .run/
+.secrets/
+runtime/ai-provider-host/
+runtime/ai-smoke/
 frontend/node_modules/
 frontend/dist/
 frontend/*.tsbuildinfo

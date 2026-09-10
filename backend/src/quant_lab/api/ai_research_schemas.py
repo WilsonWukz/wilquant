@@ -102,10 +102,10 @@ class AIUsageResponse(BaseModel):
     id: str
     run_id: str
     attempt_id: str
-    prompt_tokens: int
-    cached_prompt_tokens: int
-    completion_tokens: int
-    total_tokens: int
+    prompt_tokens: int | None
+    cached_prompt_tokens: int | None
+    completion_tokens: int | None
+    total_tokens: int | None
     reported_cost: Decimal | None
     estimated_cost: Decimal | None
     currency: str

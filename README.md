@@ -241,4 +241,4 @@ npm.cmd run build
 
 ## 当前支持范围
 
-wilquant 当前提供数据管理、策略回测、研究分析、AI provenance foundation 和 PAPER 模拟执行。AI provenance 不调用模型，PAPER 使用模拟资金和本地行情推进，系统不会向外部交易通道提交订单。
+wilquant 当前提供数据管理、策略回测、研究分析、AI 证据校验和 PAPER 模拟执行。可选的隔离 AI Provider Host 支持受控文本模型调用与用量审计，默认不启动；配置方式见 [Provider 本地配置](docs/ai-3-provider-operations.md)。PAPER 使用模拟资金和本地行情推进，系统不会向外部交易通道提交订单。

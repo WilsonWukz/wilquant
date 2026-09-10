@@ -144,7 +144,7 @@ def _seed_case_and_ai2_rows(engine) -> None:
 def test_ai2_revision_is_the_single_linear_head() -> None:
     config = Config("backend/alembic.ini")
     script = ScriptDirectory.from_config(config)
-    assert script.get_heads() == [REVISION_0015]
+    assert script.get_heads() == ["20260910_0016"]
     assert script.get_revision(REVISION_0015).down_revision == REVISION_0014
 
 
@@ -162,7 +162,7 @@ def test_upgrade_creates_four_history_tables_and_derived_fts(
         )
         assert "VIRTUAL TABLE" in sql.upper()
         assert "fts5" in sql.lower()
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == REVISION_0015
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260910_0016"
     engine.dispose()
 
 

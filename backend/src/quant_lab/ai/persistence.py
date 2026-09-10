@@ -194,15 +194,37 @@ class AIUsageLedgerModel(Base):
     attempt_id: Mapped[str] = mapped_column(
         ForeignKey("ai_analysis_attempts.id", ondelete="RESTRICT"), nullable=False
     )
-    prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
-    cached_prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
-    completion_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
-    total_tokens: Mapped[int] = mapped_column(Integer, nullable=False)
+    prompt_tokens: Mapped[int | None] = mapped_column(Integer)
+    cached_prompt_tokens: Mapped[int | None] = mapped_column(Integer)
+    completion_tokens: Mapped[int | None] = mapped_column(Integer)
+    total_tokens: Mapped[int | None] = mapped_column(Integer)
     reported_cost: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     estimated_cost: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
     currency: Mapped[str] = mapped_column(String(8), nullable=False)
     is_estimate: Mapped[bool] = mapped_column(nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class AIProviderCallBindingModel(Base):
+    """Immutable invocation reservation, one-to-one with the existing attempt."""
+
+    __tablename__ = "ai_provider_call_bindings"
+    __table_args__ = (
+        CheckConstraint(
+            "reserved_cost IS NULL OR reserved_cost >= 0", name="ck_ai_provider_reserved_cost"
+        ),
+    )
+
+    attempt_id: Mapped[str] = mapped_column(
+        ForeignKey("ai_analysis_attempts.id", ondelete="RESTRICT"), primary_key=True
+    )
+    run_id: Mapped[str] = mapped_column(
+        ForeignKey("ai_analysis_runs.id", ondelete="RESTRICT"), nullable=False, index=True
+    )
+    binding_json: Mapped[str] = mapped_column(Text, nullable=False)
+    reserved_cost: Mapped[Decimal | None] = mapped_column(Numeric(20, 8))
+    currency: Mapped[str] = mapped_column(String(8), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class AIEvidencePackModel(Base):

@@ -33,10 +33,10 @@ TERMINAL_RUN_STATUSES = frozenset(
 
 @dataclass(frozen=True, slots=True)
 class AIUsageInput:
-    prompt_tokens: int
-    cached_prompt_tokens: int
-    completion_tokens: int
-    total_tokens: int
+    prompt_tokens: int | None
+    cached_prompt_tokens: int | None
+    completion_tokens: int | None
+    total_tokens: int | None
     reported_cost: Decimal | None
     estimated_cost: Decimal | None
     currency: str
@@ -183,18 +183,27 @@ class AIProvenanceService:
 
     def append_usage(self, attempt_id: str, value: AIUsageInput) -> AIUsageLedgerModel:
         attempt = self.get_attempt(attempt_id)
-        if min(
+        tokens = (
             value.prompt_tokens,
             value.cached_prompt_tokens,
             value.completion_tokens,
             value.total_tokens,
-        ) < 0 or value.cached_prompt_tokens > value.prompt_tokens:
+        )
+        if any(token is not None and token < 0 for token in tokens) or (
+            value.cached_prompt_tokens is not None
+            and value.prompt_tokens is not None
+            and value.cached_prompt_tokens > value.prompt_tokens
+        ):
             raise AIProvenanceError("AI_USAGE_TOKEN_INVALID", "AI token 用量无效")
-        if value.total_tokens != value.prompt_tokens + value.completion_tokens:
+        if (
+            value.total_tokens is not None
+            and value.prompt_tokens is not None
+            and value.completion_tokens is not None
+            and value.total_tokens != value.prompt_tokens + value.completion_tokens
+        ):
             raise AIProvenanceError("AI_USAGE_TOTAL_MISMATCH", "AI token 总量与分项不一致")
         if any(
-            cost is not None and cost < 0
-            for cost in (value.reported_cost, value.estimated_cost)
+            cost is not None and cost < 0 for cost in (value.reported_cost, value.estimated_cost)
         ):
             raise AIProvenanceError("AI_USAGE_COST_INVALID", "AI 成本不能为负数")
         return self.repository.add_usage(
@@ -265,14 +274,11 @@ class AIProvenanceService:
 
     def recover_incomplete_runs(self, now_utc: datetime) -> tuple[str, ...]:
         recovered: list[str] = []
+        # A user may have cancelled the run while a provider request was in flight.
+        # Recover attempts independently; never reopen or mutate a terminal run.
+        for attempt in self.repository.list_started_attempts():
+            self.repository.abandon_provider_attempt(attempt.id, now_utc)
         for run in self.repository.list_incomplete_runs():
-            for attempt in self.repository.list_started_attempts(run.id):
-                self._update_attempt(
-                    attempt.id,
-                    status=AIAnalysisAttemptStatus.ABANDONED.value,
-                    failure_code="AI_ATTEMPT_RECOVERED_INCOMPLETE",
-                    completed_at=now_utc,
-                )
             self._update_run(
                 run.id,
                 status=AIAnalysisRunStatus.FAILED.value,

@@ -147,6 +147,18 @@ class AIModelConfigVersionService:
     ) -> AIModelConfigVersionModel:
         frozen_capabilities = dict(capabilities)
         frozen_parameters = dict(parameters)
+        if "provider_profile" in frozen_parameters:
+            from quant_lab.ai.provider_configuration import (
+                ProviderModelParameters,
+                provider_config_json,
+            )
+
+            normalized = provider_config_json(
+                ProviderModelParameters.model_validate(frozen_parameters).model_dump(mode="json")
+            )
+            if not isinstance(normalized, dict):
+                raise AIProvenanceError("AI_PROVIDER_CONFIG_INVALID", "Provider 配置无效")
+            frozen_parameters = normalized
         if _contains_forbidden_secret_key(frozen_capabilities) or _contains_forbidden_secret_key(
             frozen_parameters
         ):

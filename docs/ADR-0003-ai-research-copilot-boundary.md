@@ -1,13 +1,13 @@
 # ADR-0003：AI Research Copilot 信任与推理边界
 
-- 状态：已批准；AI-1 已验收，AI-2 `EVIDENCE & TEMPORAL VALIDATION STABLE`
+- 状态：已批准；AI-1/AI-2 已验收，AI-3 已通过最终完整验收（详见 docs/ai-3-provider-acceptance.md）
 - 日期：2026-08-27
 - 决策范围：研究 AI 的证据、推理、权限、provider 隔离、记忆与动作边界
 - 前置决策：ADR-0002 ExecutionGateway 与 Multi-Market 执行边界
 
 ## 背景
 
-wilquant 已具备不可变行情与策略版本、回测、实验比较、诊断、研究报告、PAPER 确定性执行，以及 Phase 6A 设计的多市场与真实资金安全边界。AI-1 已加入无模型 provenance foundation；当前仍没有 LLM runtime、AI provider、AI secret 或 Copilot。
+wilquant 已具备不可变行情与策略版本、回测、实验比较、诊断、研究报告、PAPER 确定性执行，以及 Phase 6A 设计的多市场与真实资金安全边界。最初制定本 ADR 时尚无 Provider runtime；2026-09-10 用户另行批准 AI-3 隔离实现，不授权 Copilot 或交易写入。
 
 PA_Agent 展示了两阶段诊断/决策、校验重试、分析记录、增量分析、经验案例和分析后追问等有价值的产品模式。但它使用 AGPL-3.0-or-later，并且其领域语言、Prompt、决策树、文件记录和单机 GUI 结构不适合作为 wilquant 的实现基础。
 
@@ -233,9 +233,17 @@ AI-2 将六层 deterministic validation、ResearchGate 与 `hard filters -> stru
 
 ## 本 ADR 不授权
 
-- 不授权超出已验收 AI-2 范围的代码、migration、依赖、目录或 secret；
-- 不授权任何模型或 provider 网络调用；
+- AI-3 授权限定为独立 Host/协议、Core 调用审计/预算、最小 0016、受限 secret store 和测试；不授权 AI-4；
+- 真实 Provider smoke 仅用户显式人工确认后执行，不在自动门禁调用外网；
 - 不授权读取 PA_Agent 源码进入 wilquant；
 - 不授权任何 PAPER/LIVE/Broker 行为；
-- 只授权进入 AI-2 Evidence & Temporal Validation；AI-2 完成后停止，不授权自动进入 AI-3；
+- 完成 AI-3 后停止，不自动进入 AI-4；
 - 不授权用 AI confidence、stance 或 thesis 影响资本、风控或执行。
+
+## AI-3 固定实施语义（2026-09-10）
+
+共享 `ai_provider_protocol` 只依赖 stdlib/Pydantic；Core 和 Host 单向依赖它，Host 不导入既有 ORM contracts。共同协议族不等于行为完全一致，wire 参数、usage/reasoning 映射由冻结 capability 决定，不按厂商名称猜测。
+
+复用 STARTED 与三个互斥终态：COMPLETED、FAILED、ABANDONED。未知结果采用 ABANDONED / PROVIDER_RESULT_UNKNOWN，不引入 UNKNOWN/DISPATCHING。0016 允许 token NULL，并新增以既有 attempt_id 为主键的不可变调用绑定，不新增 ProviderRun/ProfileVersion。发送前在事务内固定 request/config/prompt/evidence/gate 指纹及预算预留；未知结果保留保守预算，不自动 retry。
+
+Windows token 私有 ACL 从创建时生效并读回验证；Credential Manager 不可用 fail closed，无明文或 DPAPI fallback。raw 独立有界脱敏，reasoning 默认移除；不产生 accepted output。详情见 AI-3 design 与 `docs/ai-3-provider-operations.md`。

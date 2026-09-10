@@ -1,6 +1,6 @@
 # wilquant AI Research Copilot 架构设计
 
-- 状态：已设计；AI-1 已稳定，AI-2 `EVIDENCE & TEMPORAL VALIDATION STABLE`，停止在 AI-3 之前
+- 状态：AI-1/AI-2 已稳定；AI-3 隔离 Provider 实施待完整验收，停止在 AI-4 之前
 - 日期：2026-08-27
 - 范围：AI 研究分析、证据追溯、案例记忆、研究论点、上下文 Copilot 与草稿动作
 - 前置边界：Phase 5 PAPER、Phase 6A LIVE + Multi-Market Architecture、ADR-0002
@@ -1079,5 +1079,7 @@ AI-1 Provenance Foundation 已稳定。AI-2 已按授权实现 EvidencePack、gr
 AI RESEARCH COPILOT ARCHITECTURE DESIGNED
 AI-1 PROVENANCE FOUNDATION STABLE
 AI-2 EVIDENCE & TEMPORAL VALIDATION STABLE
-STOP BEFORE AI-3
+STOP BEFORE AI-4
 ```
+
+AI-3 于 2026-09-10 获单独实施授权。具体约束以 `2026-09-10-ai-3-provider-isolation-design.md` 为准：nullable usage、ABANDONED 未知结果、发送前预算 reservation、纯协议依赖层、capability 驱动 wire 参数、无自动 retry、Windows Credential Manager 与创建即私有 token ACL。旧章节中的“停止在 AI-3 之前”描述 AI-2 历史终点，不是当前授权范围。AI-3 当前等待最终完整验收，不提前宣布 STABLE。
