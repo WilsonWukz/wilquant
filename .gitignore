@@ -1,4 +1,6 @@
 .worktrees/
+/ARCHITECTURE.md
+/docs/
 .env
 .venv/
 .uv-cache/

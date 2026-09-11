@@ -48,7 +48,7 @@ Settings use the `QUANT_LAB_` prefix. See [.env.example](.env.example) for defau
 
 Runtime data defaults to the project directory. Set `QUANT_LAB_RUNTIME_ROOT` before initialization and startup for a separate storage location. Changing this setting does not move existing data.
 
-AI analysis is optional and disabled by default. It uses a separate Provider Host with an explicitly configured OpenAI-compatible endpoint. Provider credentials belong in Windows Credential Manager, not in repository files. See [Provider setup](docs/ai-3-provider-operations.md) and [Analysis API configuration](docs/ai-4-research-operations.md).
+AI analysis is optional and disabled by default. It uses a separate Provider Host with an explicitly configured OpenAI-compatible endpoint. Provider credentials belong in Windows Credential Manager, not in repository files.
 
 ## Development
 
@@ -61,10 +61,3 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/test.ps1
 ```
 
 This runs pytest, Ruff, mypy, Vitest, TypeScript checks and the Vite production build.
-
-## Documentation
-
-- [System architecture](ARCHITECTURE.md)
-- [AI Provider setup](docs/ai-3-provider-operations.md)
-- [Research analysis API](docs/ai-4-research-operations.md)
-- [Design decisions and technical documentation](docs/)
