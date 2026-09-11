@@ -1,6 +1,6 @@
 # ADR-0003：AI Research Copilot 信任与推理边界
 
-- 状态：已批准；AI-1/AI-2 已验收，AI-3 已通过最终完整验收（详见 docs/ai-3-provider-acceptance.md）
+- 状态：已批准；AI-1/AI-2/AI-3 已验收，AI-4 于 2026-09-11 通过完整门禁与合同审查（详见 docs/ai-4-research-acceptance.md）；停止在 AI-5 之前
 - 日期：2026-08-27
 - 决策范围：研究 AI 的证据、推理、权限、provider 隔离、记忆与动作边界
 - 前置决策：ADR-0002 ExecutionGateway 与 Multi-Market 执行边界
@@ -85,12 +85,12 @@ Recommendation 中 stance/confidence 只描述研究判断。confidence 是 ordi
 
 校验顺序固定为：syntax、schema、semantic、grounding、temporal、immutable facts。
 
-- provider transient、syntax 和 schema 可在同一 input fingerprint 下有界重试；
-- semantic 只允许严格受限的一次修复；
+- AI-3/AI-4 不自动重试 Provider failure 或结果未知；syntax/schema 仅在六层校验判定可重试时，每阶段最多追加两次 Attempt；
+- semantic 是否可修复由同一 ValidationService 的稳定 finding/retryable 决定，不建立另一套校验；
 - grounding 默认不自动重试；
 - temporal leak、immutable fact drift 和 unauthorized action 永不重试当前 run；
 - 每次调用追加 AIAnalysisAttempt，绝不覆盖原响应；
-- retry 不能改变 ResearchCase、EvidencePack、PromptTemplateVersion 或 ModelConfigVersion。
+- retry 不能改变 ResearchCase、EvidencePack、RetrievalSnapshot、cutoffs、PromptTemplateVersion 或 ModelConfigVersion；base input fingerprint 不变，新增有界反馈后的 rendered prompt fingerprint 按实际消息重新冻结。
 
 ### 决策五：全链 provenance 与 append-only
 
@@ -120,9 +120,9 @@ accepted diagnosis/recommendation、attempt、trace、evidence、thesis revision
 - 不持有 Broker/Gateway client；
 - 使用独立认证 secret/protocol；
 - 不与 ExecutionGateway 共享进程、token、credential name 或 secret store namespace；
-- 崩溃只使 AI run 失败。
+- 崩溃只影响 AI 分析；可能已派发的 Attempt 使用 ABANDONED / PROVIDER_RESULT_UNKNOWN，不声称未执行，不自动重试。AI-4 已接受的 Stage1 保留，Run outcome 与 lifecycle 独立。
 
-AI secret 首选 Windows Credential Manager，DPAPI 文件仅作经测试 fallback。Core/Frontend/SQLite 只保存 `secret_ref` 和 configured 状态，不保存明文。
+AI-3/AI-4 Provider secret 使用 Windows Credential Manager；DPAPI fallback 暂缓，无明文 fallback。Core/Frontend/SQLite 只保存 credential reference，不保存 Provider 明文密钥。
 
 AI-3 的首个真实 adapter 为通用 `OpenAICompatibleProvider`，第一个真实验收 endpoint 优先使用 DeepSeek 官方/兼容接口，但领域层不出现厂商条件分支。Provider Host 使用独立的 127.0.0.1 HTTP/JSON、随机短期 secret、protocol version、request ID、timestamp/replay protection；绝不复用 Gateway process、port、bearer token、credential namespace 或 crash/kill state。当前不采用 Windows named pipe。
 
@@ -231,7 +231,7 @@ AI-2 将六层 deterministic validation、ResearchGate 与 `hard filters -> stru
 
 实施状态：AI-2 已于 2026-08-31 完成首轮实施，并于 2026-09-09 完成 evidence、concrete resolver、claim/schema 与 freshness 合同收口。最终完整门禁退出码 0：后端 734 项（AI 206 项）、前端 10 文件 / 48 项、Ruff、mypy、TypeScript/Vite 均通过。状态为 `AI-2 EVIDENCE & TEMPORAL VALIDATION STABLE`。详细合同与测试证据见 `docs/ai-2-contract-closure-acceptance.md`。停止在 AI-3 之前，本 ADR 不因此授权任何 Provider、模型调用、AI UI 或交易写操作。
 
-## 本 ADR 不授权
+## AI-3 阶段的历史授权边界
 
 - AI-3 授权限定为独立 Host/协议、Core 调用审计/预算、最小 0016、受限 secret store 和测试；不授权 AI-4；
 - 真实 Provider smoke 仅用户显式人工确认后执行，不在自动门禁调用外网；
@@ -247,3 +247,19 @@ AI-2 将六层 deterministic validation、ResearchGate 与 `hard filters -> stru
 复用 STARTED 与三个互斥终态：COMPLETED、FAILED、ABANDONED。未知结果采用 ABANDONED / PROVIDER_RESULT_UNKNOWN，不引入 UNKNOWN/DISPATCHING。0016 允许 token NULL，并新增以既有 attempt_id 为主键的不可变调用绑定，不新增 ProviderRun/ProfileVersion。发送前在事务内固定 request/config/prompt/evidence/gate 指纹及预算预留；未知结果保留保守预算，不自动 retry。
 
 Windows token 私有 ACL 从创建时生效并读回验证；Credential Manager 不可用 fail closed，无明文或 DPAPI fallback。raw 独立有界脱敏，reasoning 默认移除；不产生 accepted output。详情见 AI-3 design 与 `docs/ai-3-provider-operations.md`。
+
+## AI-4 单独授权与固定实施语义（2026-09-11）
+
+用户另行批准 AI-4 两阶段研究分析，不承接上文未来 conversation/thesis/draft 的实施授权，完成后停止 AI-5 前。一个 AIAnalysisRun 表达逻辑分析，lifecycle / AnalysisOutcome / StageProgress 独立；每个 Attempt 持久化 stage、parent lineage、反馈 identity 和自己的 rendered prompt。Stage2 必须绑定 accepted Stage1 identity，经同一六层校验，不把 diagnosis 当 deterministic FACT。
+
+create 与 execute 使用独立 idempotency identity。execute epoch 区分 INITIAL / RESUME / RETRY_UNKNOWN；单 owner，终态不重开。未知 Attempt、取消后可能发生的调用保留 ABANDONED 与预算预留；新 key 显式确认才可新 Attempt。已完成 candidate 的恢复仅做本地校验，不依赖 Host 在线，不重新调用。
+
+新增 EXPLICIT / SERVER_FROZEN_CURRENT 知识 cutoff 模式；历史回放仅 EXPLICIT。Core 在观察前持久化 create identity/owner，冻结来源投影后以真实服务器 UTC 时间生成 resolved cutoff，再用原 AI-2 双时间规则冻结 Pack/Retrieval/resolved input identity。显式 cutoff 与 market_data_cutoff 不扩大，known_at 不回填，同 key 不重新观察，retry/resume 不刷新；中断的 create key 失败关闭。submitted request 与 resolved input fingerprints 分开记录。
+
+四类分析共用统一合同和 pipeline。PAPER 选定证据必须验证 session/account/intent/policy 的正式关系，不因为同 market 混用。缺市场确定性指标 WAIT；US evidence 等待 6B，不伪造基础能力。
+
+0017 是尚未发布的本轮 forward migration，接 0016，不修改历史 migrations。accepted payload 用有界 artifact，DB 保存 linkage/hash；不新增 research_diagnoses/research_recommendations 平行实体。
+
+Core 分析 API 采用独立本地 Bearer token、loopback/Host/Origin 检查及严格 JSON，不是 raw completion proxy。Core token 可在验证当前用户 ACL、owner、格式后持久复用，独立进程锁保护 recovery；不与 Host 短期 token 或 Gateway 共用。安全模型防网络暴露、误调用和跨普通账户访问，不声称抵御已控制同一 Windows 用户会话的恶意进程。Host availability 只报告四项本地可用性，不证明 Provider 认证、配额、可达性或健康，不发送 health completion。
+
+AI-4 已通过完整门禁与独立合同/质量审查：后端 978 项（AI 450）、前端 48 项，Ruff/mypy/TypeScript/Vite 全通过。详见 docs/ai-4-research-acceptance.md。真实 Provider smoke 未运行；停止在 AI-5 之前。

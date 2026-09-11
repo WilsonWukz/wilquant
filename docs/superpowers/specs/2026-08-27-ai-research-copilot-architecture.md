@@ -1,6 +1,6 @@
 # wilquant AI Research Copilot 架构设计
 
-- 状态：AI-1/AI-2 已稳定；AI-3 隔离 Provider 实施待完整验收，停止在 AI-4 之前
+- 状态：AI-1/AI-2/AI-3 已验收；2026-09-11 用户单独批准的 AI-4 已通过完整门禁与合同审查，停止在 AI-5 之前
 - 日期：2026-08-27
 - 范围：AI 研究分析、证据追溯、案例记忆、研究论点、上下文 Copilot 与草稿动作
 - 前置边界：Phase 5 PAPER、Phase 6A LIVE + Multi-Market Architecture、ADR-0002
@@ -489,7 +489,7 @@ REVIEW_PAPER_RESULTS
 
 | 失败 | 是否可自动 retry | 规则 |
 |---|---|---|
-| provider timeout/429/5xx | 有界重试 | 同一 input fingerprint，新 Attempt，指数退避 |
+| provider timeout/429/5xx | 不自动重试 | 明确失败 FAILED；可能已派发但结果不明 ABANDONED；未知需新 key 显式确认，保留预算 |
 | syntax/truncation | 有界重试 | 不允许修改事实包或模板版本 |
 | schema 缺字段 | 有界重试 | feedback 只指出 schema path |
 | 可修复 semantic | 最多一次 | 不能重写未被反馈涉及的不可变字段 |
@@ -774,7 +774,7 @@ AI-3 使用只绑定 `127.0.0.1` 的 HTTP/JSON 独立 AI Provider Host。可复�
 | 失败 | AI run | Backtest/PAPER/LIVE |
 |---|---|---|
 | Provider Host down | `FAILED_PROVIDER_UNAVAILABLE` | 无变化 |
-| timeout/rate limit | 有界 retry 后失败 | 无变化 |
+| timeout/rate limit | 未知 ABANDONED 或明确 FAILED，不自动 retry | 无变化 |
 | invalid output | validation failed | 无变化 |
 | temporal leak/fact drift | `REJECTED_*` | 无变化 |
 | database write failure | run transaction rollback/failed audit | PAPER/LIVE 事务不参与 |
@@ -801,8 +801,8 @@ AI-1 migration `20260827_0014` 与 AI-2 线性后继 `20260830_0015` 已实现�
 | `ai_validation_results` | 六层校验、gate 与 retry consistency provenance | append-only | AI-2 implemented |
 | `ai_research_case_documents` | canonical durable retrieval input | append-only | AI-2 implemented |
 | `ai_research_case_fts` | 从 case documents 重建的 FTS5 索引 | derived/disposable | AI-2 implemented |
-| `research_diagnoses` | Stage 1 accepted result | immutable | AI-4 planned |
-| `research_recommendations` | Stage 2 accepted result | immutable | AI-4 planned |
+| `ai_analysis_orchestrations` | 同一 Run 的阶段、结果、accepted artifact linkage | 输入及已接受结果不可改，终态不可重开 | AI-4 stable |
+| `ai_analysis_context_freezes` | create key / owner / observation artifact | 身份与已观察投影不可改 | AI-4 stable |
 | `ai_retrieval_snapshots` | 候选、文档 fingerprint 与业务级排名分解 | append-only | AI-2 implemented |
 | `research_theses` | 稳定 identity/current projection | 受控 projection | AI-5 planned |
 | `research_thesis_revisions` | thesis 内容 | append-only | AI-5 planned |
@@ -1082,4 +1082,14 @@ AI-2 EVIDENCE & TEMPORAL VALIDATION STABLE
 STOP BEFORE AI-4
 ```
 
-AI-3 于 2026-09-10 获单独实施授权。具体约束以 `2026-09-10-ai-3-provider-isolation-design.md` 为准：nullable usage、ABANDONED 未知结果、发送前预算 reservation、纯协议依赖层、capability 驱动 wire 参数、无自动 retry、Windows Credential Manager 与创建即私有 token ACL。旧章节中的“停止在 AI-3 之前”描述 AI-2 历史终点，不是当前授权范围。AI-3 当前等待最终完整验收，不提前宣布 STABLE。
+AI-3 于 2026-09-10 获单独实施授权并完成验收，详见 `docs/ai-3-provider-acceptance.md`。具体约束以 `2026-09-10-ai-3-provider-isolation-design.md` 为准：nullable usage、ABANDONED 未知结果、发送前预算 reservation、纯协议依赖层、capability 驱动 wire 参数、无自动 retry、Windows Credential Manager 与创建即私有 token ACL。旧章节中停止点保留为各阶段历史，不表示后续自动授权。DPAPI fallback 在 AI-3/AI-4 均暂缓。
+
+## AI-4 授权后的合同闭合（2026-09-11）
+
+用户批准统一两阶段合同及 CURRENT_RESEARCH 服务端 cutoff 冻结；详见 `2026-09-11-ai-4-two-stage-design.md`。Run lifecycle/outcome/progress 分离；Attempt 明确 stage/lineage；两阶段及每阶段最多两次 validation retry 共用冻结 ModelConfig 与 Run 预算。base 与 rendered fingerprints 区分，后者绑定实际反馈后的消息；Provider failure/unknown 不自动 retry。
+
+EXPLICIT cutoff 不扩大，HISTORICAL_REPLAY 不允许 SERVER_FROZEN_CURRENT。服务端模式先持久化 submitted identity/owner，观察并持久化不可变投影，再生成 aware UTC knowledge cutoff，按原 AI-2 时间规则冻结 Pack/Retrieval/resolved input。market cutoff 不变，known_at 不回填，案例仍受双 cutoff；相同 create key 不重新观察，Stage2/retry/resume 不刷新来源。一次逻辑 Run 不建立第二套 DiagnosisRun/RecommendationRun。
+
+恢复保留 Stage1；已完成 candidate 仅本地补校验。STARTED 中断按 ABANDONED 处理；显式 RETRY_UNKNOWN 新 key 才可追加调用，未知预算不能归零。取消仅停止本地编排，不代表上游没执行。Host availability 是本地四项状态，不是 Provider 健康。Core 授权与 Host secret 独立，安全模型不覆盖同 Windows 用户会话已失陷的恶意进程。
+
+AI-4 仍无 frontend/chat/streaming/embedding/tools/draft 副作用或 PAPER/LIVE 写入。AI-5 及以后不在本轮授权中。完整门禁及独立合同/质量审查已通过：后端 978 项（AI 450）、前端 48 项，Ruff/mypy/TypeScript/Vite 全通过；详细证据见 docs/ai-4-research-acceptance.md。真实 Provider smoke 未运行，停止在 AI-5 之前。
