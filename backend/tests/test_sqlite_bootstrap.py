@@ -18,7 +18,7 @@ SRC_DIR = REPO_ROOT / "backend" / "src"
 ALEMBIC_INI = REPO_ROOT / "backend" / "alembic.ini"
 
 REVISION_0008 = "20260722_0008"
-REVISION_HEAD = "20260910_0016"
+REVISION_HEAD = "20260911_0017"
 
 
 def _alembic_config() -> Config:
@@ -94,9 +94,10 @@ def test_upgrade_to_head_is_idempotent(
 
     engine = create_sqlite_engine(settings)
     with engine.connect() as connection:
-        assert connection.execute(
-            text("SELECT version_num FROM alembic_version")
-        ).scalar_one() == REVISION_HEAD
+        assert (
+            connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+            == REVISION_HEAD
+        )
     engine.dispose()
 
 

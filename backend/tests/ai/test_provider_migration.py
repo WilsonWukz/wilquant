@@ -16,7 +16,7 @@ def test_provider_migration_matrix(tmp_path, monkeypatch, start):
     monkeypatch.setenv("QUANT_LAB_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setenv("QUANT_LAB_RUNTIME_ROOT", str(tmp_path / "runtime"))
     config = Config("backend/alembic.ini")
-    assert ScriptDirectory.from_config(config).get_heads() == ["20260910_0016"]
+    assert ScriptDirectory.from_config(config).get_heads() == ["20260911_0017"]
     command.upgrade(config, start)
     command.upgrade(config, "head")
     engine = create_sqlite_engine(Settings())

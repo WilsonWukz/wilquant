@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     import_max_bytes: int = Field(default=20 * 1024 * 1024, ge=1)
     import_preview_rows: int = Field(default=100, ge=1, le=1000)
     log_level: str = "INFO"
+    ai_analysis_enabled: bool = False
+    ai_provider_host_url: str = "http://127.0.0.1:8011"
+    ai_provider_host_token_path: Path = Path(".run/ai-provider-host/token")
 
     @field_validator("runtime_root", mode="before")
     @classmethod
@@ -84,6 +87,7 @@ class Settings(BaseSettings):
             "import_directory",
             "publication_staging_directory",
             "published_directory",
+            "ai_provider_host_token_path",
         ):
             path = getattr(self, field_name).expanduser()
             if not path.is_absolute():

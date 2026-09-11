@@ -13,7 +13,7 @@ from quant_lab.db.sqlite import create_sqlite_engine
 
 REVISION_0003 = "20260720_0003"
 REVISION_0004 = "20260720_0004"
-REVISION_HEAD = "20260910_0016"
+REVISION_HEAD = "20260911_0017"
 
 PREVIEW_COLUMNS = {
     "source_file_size",
@@ -75,12 +75,8 @@ def _assert_publication_schema(engine: Engine) -> None:
     assert ("dataset_key",) in _unique_column_sets(engine, "datasets")
     assert ("dataset_id", "version") in _unique_column_sets(engine, "dataset_versions")
     assert ("publication_fingerprint",) in _unique_column_sets(engine, "dataset_versions")
-    assert ("dataset_version_id", "relative_path") in _unique_column_sets(
-        engine, "dataset_files"
-    )
-    assert ("batch_id", "issue_fingerprint") in _unique_column_sets(
-        engine, "data_quality_issues"
-    )
+    assert ("dataset_version_id", "relative_path") in _unique_column_sets(engine, "dataset_files")
+    assert ("batch_id", "issue_fingerprint") in _unique_column_sets(engine, "data_quality_issues")
 
     indexes = {
         index["name"]
@@ -107,22 +103,13 @@ def _assert_publication_schema(engine: Engine) -> None:
         triggers = {
             row.name: row.sql
             for row in connection.execute(
-                text(
-                    "SELECT name, sql FROM sqlite_master "
-                    "WHERE type = 'trigger' ORDER BY name"
-                )
+                text("SELECT name, sql FROM sqlite_master WHERE type = 'trigger' ORDER BY name")
             )
         }
     assert set(triggers) >= PUBLISHED_TRIGGERS
-    assert "OLD.status = 'PUBLISHED'" in triggers[
-        "trg_dataset_versions_published_no_update"
-    ]
-    assert "OLD.status = 'PUBLISHED'" in triggers[
-        "trg_dataset_versions_published_no_delete"
-    ]
-    assert "OLD.status = 'PUBLISHED'" not in triggers[
-        "trg_dataset_files_published_no_update"
-    ]
+    assert "OLD.status = 'PUBLISHED'" in triggers["trg_dataset_versions_published_no_update"]
+    assert "OLD.status = 'PUBLISHED'" in triggers["trg_dataset_versions_published_no_delete"]
+    assert "OLD.status = 'PUBLISHED'" not in triggers["trg_dataset_files_published_no_update"]
     assert "status = 'PUBLISHED'" in triggers["trg_dataset_files_published_no_insert"]
     assert "status = 'PUBLISHED'" in triggers["trg_dataset_files_published_no_update"]
     assert "status = 'PUBLISHED'" in triggers["trg_dataset_files_published_no_delete"]
@@ -133,9 +120,10 @@ def test_empty_database_upgrades_to_0004_head(tmp_path: Path, monkeypatch) -> No
     command.upgrade(config, "head")
 
     with engine.connect() as connection:
-        assert connection.execute(
-            text("SELECT version_num FROM alembic_version")
-        ).scalar_one() == REVISION_HEAD
+        assert (
+            connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+            == REVISION_HEAD
+        )
     _assert_publication_schema(engine)
     engine.dispose()
 
@@ -194,12 +182,16 @@ def test_0003_upgrades_to_0004_and_deduplicates_issue_v2_deterministically(
 
     _assert_publication_schema(engine)
     with engine.connect() as connection:
-        issues = connection.execute(
-            text(
-                "SELECT issue_id, issue_fingerprint_version, normalized_value "
-                "FROM data_quality_issues ORDER BY issue_id"
+        issues = (
+            connection.execute(
+                text(
+                    "SELECT issue_id, issue_fingerprint_version, normalized_value "
+                    "FROM data_quality_issues ORDER BY issue_id"
+                )
             )
-        ).mappings().all()
+            .mappings()
+            .all()
+        )
     assert issues == [
         {
             "issue_id": "issue-a",
@@ -230,13 +222,12 @@ def test_0004_downgrades_to_valid_0003_and_upgrades_again(
     assert PUBLICATION_TABLES.isdisjoint(inspector.get_table_names())
     assert PREVIEW_COLUMNS.isdisjoint(_column_names(engine, "import_batches"))
     assert ISSUE_V2_COLUMNS.isdisjoint(_column_names(engine, "data_quality_issues"))
-    assert ("batch_id", "issue_fingerprint") in _unique_column_sets(
-        engine, "data_quality_issues"
-    )
+    assert ("batch_id", "issue_fingerprint") in _unique_column_sets(engine, "data_quality_issues")
     with engine.connect() as connection:
-        assert connection.execute(
-            text("SELECT version_num FROM alembic_version")
-        ).scalar_one() == REVISION_0003
+        assert (
+            connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+            == REVISION_0003
+        )
 
     command.upgrade(config, "head")
     _assert_publication_schema(engine)
@@ -303,13 +294,14 @@ def test_downgrade_rejects_v1_issue_identity_collision_without_changing_0004(
 
     _assert_publication_schema(engine)
     with engine.connect() as connection:
-        assert connection.execute(
-            text("SELECT version_num FROM alembic_version")
-        ).scalar_one() == REVISION_0004
-        assert connection.execute(
-            text(
-                "SELECT count(*) FROM data_quality_issues "
-                "WHERE batch_id = 'batch-collision'"
-            )
-        ).scalar_one() == 2
+        assert (
+            connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+            == REVISION_0004
+        )
+        assert (
+            connection.execute(
+                text("SELECT count(*) FROM data_quality_issues WHERE batch_id = 'batch-collision'")
+            ).scalar_one()
+            == 2
+        )
     engine.dispose()

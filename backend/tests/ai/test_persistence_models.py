@@ -33,6 +33,14 @@ def test_fingerprint_columns_are_required_sha256_strings() -> None:
     for table_name in EXPECTED_TABLES:
         for column in inspector.get_columns(table_name):
             if "fingerprint" in column["name"] or column["name"].endswith("_sha256"):
+                if (table_name, column["name"]) == (
+                    "ai_analysis_attempts",
+                    "validation_feedback_fingerprint",
+                ):
+                    # No feedback exists for an initial/legacy Attempt.
+                    assert column["nullable"] is True
+                    assert getattr(column["type"], "length", None) == 64
+                    continue
                 if column["name"] in {
                     "input_envelope_fingerprint",
                     "raw_response_artifact_sha256",
@@ -49,9 +57,7 @@ def test_schema_contains_provider_profile_identity_but_no_secrets() -> None:
     Base.metadata.create_all(engine)
     inspector = inspect(engine)
 
-    model_columns = {
-        column["name"] for column in inspector.get_columns("ai_model_config_versions")
-    }
+    model_columns = {column["name"] for column in inspector.get_columns("ai_model_config_versions")}
     assert {
         "provider_kind",
         "provider_id",
@@ -68,7 +74,5 @@ def test_schema_contains_provider_profile_identity_but_no_secrets() -> None:
     }
     forbidden_fragments = ("api_key", "secret", "password", "authorization", "credential")
     assert not any(
-        fragment in name.lower()
-        for name in all_columns
-        for fragment in forbidden_fragments
+        fragment in name.lower() for name in all_columns for fragment in forbidden_fragments
     )

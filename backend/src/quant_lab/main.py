@@ -11,9 +11,16 @@ from sqlalchemy import Engine
 from sqlalchemy.exc import SQLAlchemyError
 
 from quant_lab import __version__
+from quant_lab.ai.analysis_access import AnalysisAccessBoundary
+from quant_lab.ai.analysis_local_access import CoreLocalAccess
+from quant_lab.ai.analysis_service import ResearchAnalysisService
 from quant_lab.ai.cases import ResearchCaseService
 from quant_lab.ai.provenance import AIProvenanceService
 from quant_lab.ai.repository import AIRepository
+from quant_lab.ai.source_resolvers import build_domain_resolver_registry
+from quant_lab.ai_provider_client import AIProviderHostClient
+from quant_lab.ai_provider_protocol import ProviderFailure
+from quant_lab.api.ai_analyses import router as ai_analyses_router
 from quant_lab.api.ai_research import router as ai_research_router
 from quant_lab.api.backtests import router as backtests_router
 from quant_lab.api.calendars import router as calendars_router
@@ -71,10 +78,11 @@ def create_app(
 
     resolved_settings = settings or Settings()
     owned_engine: Engine | None = None
+    analysis_access_file: CoreLocalAccess | None = None
 
     @asynccontextmanager
-    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        nonlocal owned_engine
+    async def initialize_and_serve(app: FastAPI) -> AsyncIterator[None]:
+        nonlocal owned_engine, analysis_access_file
         resolved_settings.ensure_runtime_directories()
         configure_logging(resolved_settings.log_level, resolved_settings.log_path)
         owned_engine = create_sqlite_engine(resolved_settings)
@@ -122,12 +130,8 @@ def create_app(
             resolved_settings,
         )
         app.state.paper_repository = PaperRepository(owned_engine)
-        app.state.paper_risk_service = PaperRiskService(
-            app.state.paper_repository, RiskEngine()
-        )
-        app.state.paper_risk_policy_service = PaperRiskPolicyService(
-            app.state.paper_repository
-        )
+        app.state.paper_risk_service = PaperRiskService(app.state.paper_repository, RiskEngine())
+        app.state.paper_risk_policy_service = PaperRiskPolicyService(app.state.paper_repository)
         app.state.paper_session_service = PaperSessionService(
             owned_engine,
             app.state.paper_repository,
@@ -160,14 +164,29 @@ def create_app(
             app.state.diagnostics,
             app.state.research_repository,
         )
+        app.state.ai_analysis_service = None
+        app.state.ai_analysis_access_token = None
+        app.state.ai_analysis_origins = set(resolved_settings.frontend_origins)
+        if resolved_settings.ai_analysis_enabled:
+            try:
+                analysis_access_file = CoreLocalAccess(
+                    resolved_settings.run_directory / "ai-analysis-access" / "token",
+                    lock_path=resolved_settings.sqlite_path.with_name(
+                        f".{resolved_settings.sqlite_path.name}.ai-analysis.lock"
+                    ),
+                )
+                app.state.ai_analysis_access_token = analysis_access_file.acquire()
+            except (ProviderFailure, OSError, ValueError):
+                logger.warning("研究分析本地授权不可用", extra={"event": "ai.analysis.unavailable"})
         try:
             app.state.ai_repository = AIRepository(owned_engine)
-            app.state.ai_fts_document_count = (
-                app.state.ai_repository.rebuild_research_case_fts()
-            )
+            app.state.ai_fts_document_count = app.state.ai_repository.rebuild_research_case_fts()
             app.state.ai_case_service = ResearchCaseService(app.state.ai_repository)
             app.state.ai_provenance_service = AIProvenanceService(app.state.ai_repository)
-            app.state.ai_provenance_service.recover_incomplete_runs(datetime.now(UTC))
+            app.state.ai_provenance_service.recover_incomplete_runs(
+                datetime.now(UTC),
+                recover_analyses=app.state.ai_analysis_access_token is not None,
+            )
             app.state.ai_provenance_available = True
         except SQLAlchemyError:
             logger.warning(
@@ -187,11 +206,39 @@ def create_app(
             )
         else:
             app.state.health_service = health_service
+        if app.state.ai_analysis_access_token and app.state.ai_provenance_available:
+            try:
+                local_client = AIProviderHostClient(
+                    resolved_settings.ai_provider_host_url,
+                    resolved_settings.ai_provider_host_token_path,
+                )
+                root = resolved_settings.runtime_root or resolved_settings.project_root
+                app.state.ai_analysis_service = ResearchAnalysisService(
+                    app.state.ai_repository,
+                    build_domain_resolver_registry(engine=owned_engine, artifact_root=root),
+                    local_client,
+                    root,
+                )
+            except (ProviderFailure, OSError, ValueError):
+                app.state.ai_analysis_access_token = None
+                logger.warning("研究分析本地授权不可用", extra={"event": "ai.analysis.unavailable"})
         logger.info("Application started", extra={"event": "application.started"})
         try:
             yield
         finally:
             logger.info("Application stopped", extra={"event": "application.stopped"})
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        # Resource cleanup also covers exceptions before the application's yield.
+        try:
+            async with initialize_and_serve(app):
+                yield
+        finally:
+            app.state.ai_analysis_service = None
+            app.state.ai_analysis_access_token = None
+            if analysis_access_file is not None:
+                analysis_access_file.close()
             if owned_engine is not None:
                 owned_engine.dispose()
             configure_logging(resolved_settings.log_level)
@@ -202,6 +249,7 @@ def create_app(
         lifespan=lifespan,
     )
     application.state.settings = resolved_settings
+    application.add_middleware(AnalysisAccessBoundary)
     application.add_middleware(
         CORSMiddleware,
         allow_origins=resolved_settings.frontend_origins,
@@ -222,6 +270,7 @@ def create_app(
     application.include_router(experiments_router, prefix="/api/v1")
     application.include_router(research_journal_router, prefix="/api/v1")
     application.include_router(ai_research_router, prefix="/api/v1")
+    application.include_router(ai_analyses_router, prefix="/api/v1/ai")
     return application
 
 

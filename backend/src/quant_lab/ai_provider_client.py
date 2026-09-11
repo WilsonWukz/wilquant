@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 from quant_lab.ai_provider_protocol import (
     CallPolicy,
+    ProviderAvailability,
     ProviderCallError,
     ProviderCallRequest,
     ProviderCallResult,
@@ -122,3 +123,10 @@ class AIProviderHostClient:
 
     def health(self) -> object:
         return self._exchange("GET", "/internal/v1/health")
+
+    def availability(self) -> ProviderAvailability:
+        payload = self._exchange("GET", "/internal/v1/availability")
+        try:
+            return ProviderAvailability.model_validate(payload)
+        except ValidationError:
+            raise ProviderFailure("PROVIDER_INVALID_RESPONSE") from None

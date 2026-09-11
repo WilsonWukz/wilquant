@@ -9,6 +9,15 @@ from uuid import uuid4
 
 from pydantic import ValidationError
 
+from quant_lab.ai.analysis_contracts import (
+    ANALYSIS_VALIDATION_POLICY_VERSION,
+    STAGE1_CONTRACT_VERSION,
+    STAGE2_CONTRACT_VERSION,
+    AnalysisType,
+    ResearchDiagnosis,
+    ResearchRecommendation,
+    StageContract,
+)
 from quant_lab.ai.contracts import (
     AcceptedAssertion,
     AssertionObservation,
@@ -68,6 +77,36 @@ _CLAIM_KEYS = frozenset(
         "recommendation",
     }
 )
+
+
+def _forbidden_stage_authority(value: object, stage_contract: StageContract) -> bool:
+    if isinstance(value, str) and value in {
+        "EXECUTE_LIVE_ORDER",
+        "EXECUTE_ORDER",
+        "PLACE_ORDER",
+        "CANCEL_ORDER",
+        "MODIFY_RISK_LIMITS",
+        "DISABLE_RISK_CONTROL",
+        "ACTIVATE_STRATEGY",
+        "DEPLOY_STRATEGY",
+    }:
+        return True
+    if isinstance(value, Mapping):
+        for key, nested in value.items():
+            if key in {"action_type", "recommendation", "suggested_next_actions"}:
+                actions = nested if isinstance(nested, list | tuple) else [nested]
+                for action in actions:
+                    if action is not None and (
+                        stage_contract == STAGE1_CONTRACT_VERSION
+                        or not isinstance(action, str)
+                        or action not in ALLOWED_RECOMMENDATIONS
+                    ):
+                        return True
+            if _forbidden_stage_authority(nested, stage_contract):
+                return True
+    elif isinstance(value, list | tuple):
+        return any(_forbidden_stage_authority(item, stage_contract) for item in value)
+    return False
 
 
 def _canonical_unit(value: str | None) -> str | None:
@@ -200,6 +239,34 @@ def _finding(
     )
 
 
+def _reference_safety_findings(refs: object, pack: EvidencePack) -> list[ValidationFinding]:
+    """Only reference strings are needed to identify fabrication or future data."""
+    findings = []
+    items = _item_map(pack)
+    for ref in refs if isinstance(refs, list | tuple) else ():
+        if not isinstance(ref, str):
+            continue
+        if ref not in items:
+            findings.append(
+                _finding(
+                    ValidationLayer.GROUNDING,
+                    "EVIDENCE_REF_NOT_FOUND",
+                    retryable=False,
+                    evidence_ref=ref,
+                )
+            )
+        elif (
+            items[ref].known_at > pack.temporal_context.knowledge_cutoff
+            or items[ref].effective_at > pack.temporal_context.market_data_cutoff
+        ):
+            findings.append(
+                _finding(
+                    ValidationLayer.TEMPORAL, "TEMPORAL_LEAK", retryable=False, evidence_ref=ref
+                )
+            )
+    return findings
+
+
 def _schema_field_path(location: Sequence[str | int]) -> str:
     output = ""
     for part in location:
@@ -321,16 +388,11 @@ class ValidationService:
         value: object,
         pack: EvidencePack,
         origin_attempt_id: str,
+        *,
+        recover_display_fields: bool = False,
     ) -> AssertionObservation | None:
-        if not isinstance(value, Mapping):
-            return None
-        sanitized = {key: item for key, item in value.items() if key in _CLAIM_KEYS}
-        sanitized.setdefault("evidence_refs", [])
-        sanitized.setdefault("operand_refs", [])
-        sanitized.setdefault("text", "schema-invalid observation")
-        try:
-            claim = StructuredClaim.model_validate(sanitized)
-        except ValidationError:
+        claim = self._recover_claim(value, recover_display_fields=recover_display_fields)
+        if claim is None:
             return None
         subject = _canonical_subject(claim, pack, self.subject_aliases)
         return AssertionObservation(
@@ -345,6 +407,27 @@ class ValidationService:
             origin_attempt_id=origin_attempt_id,
             trusted=False,
         )
+
+    @staticmethod
+    def _recover_claim(
+        value: object, *, recover_display_fields: bool = False
+    ) -> StructuredClaim | None:
+        """Recover only typed claim fields, never repair an invalid envelope."""
+        if not isinstance(value, Mapping):
+            return None
+        sanitized = {key: item for key, item in value.items() if key in _CLAIM_KEYS}
+        if recover_display_fields:
+            for field, maximum in (("claim_id", 100), ("text", 2000)):
+                display = sanitized.get(field)
+                if not isinstance(display, str) or not 1 <= len(display) <= maximum:
+                    sanitized[field] = "schema-invalid-untrusted"
+        sanitized.setdefault("evidence_refs", [])
+        sanitized.setdefault("operand_refs", [])
+        sanitized.setdefault("text", "schema-invalid observation")
+        try:
+            return StructuredClaim.model_validate(sanitized)
+        except ValidationError:
+            return None
 
     @staticmethod
     def _result(
@@ -376,7 +459,17 @@ class ValidationService:
         prior_assertions: Sequence[AcceptedAssertion | AssertionObservation] = (),
         freshness_requirement: FreshnessRequirement = FreshnessRequirement.HISTORICAL_OK,
         reference_now: datetime | None = None,
+        stage_contract: StageContract | None = None,
+        expected_analysis_type: AnalysisType | None = None,
+        expected_diagnosis_ref: str | None = None,
     ) -> ValidationResult:
+        if stage_contract not in {None, STAGE1_CONTRACT_VERSION, STAGE2_CONTRACT_VERSION}:
+            raise ValueError("unsupported stage contract")
+        policy_version = (
+            ANALYSIS_VALIDATION_POLICY_VERSION
+            if stage_contract
+            else self.policy.validation_policy_version
+        )
         findings: list[ValidationFinding] = []
         observations: list[AssertionObservation] = []
         raw_fingerprint = fingerprint_payload(
@@ -394,29 +487,108 @@ class ValidationService:
                     accepted=(),
                     observations=(),
                     candidate_fingerprint=raw_fingerprint,
-                    policy_version=self.policy.validation_policy_version,
+                    policy_version=policy_version,
                 )
         else:
             parsed = dict(candidate)
+        if stage_contract and _forbidden_stage_authority(parsed, stage_contract):
+            findings.append(
+                _finding(ValidationLayer.SEMANTIC, "FORBIDDEN_AI_AUTHORITY", retryable=False)
+            )
         try:
-            structured = StructuredCandidate.model_validate(parsed)
+            if stage_contract:
+                envelope = (
+                    ResearchDiagnosis.model_validate(parsed)
+                    if stage_contract == STAGE1_CONTRACT_VERSION
+                    else ResearchRecommendation.model_validate(parsed)
+                )
+                structured = StructuredCandidate(
+                    schema_version="ai-structured-output-v1",
+                    action_type="RESEARCH_RECOMMENDATION",
+                    claims=envelope.claims,
+                )
+            else:
+                structured = StructuredCandidate.model_validate(parsed)
         except ValidationError as error:
             claims = parsed.get("claims", []) if isinstance(parsed, Mapping) else []
             if isinstance(claims, list | tuple):
                 observations.extend(
                     observation
                     for value in claims
-                    if (observation := self._observation(value, pack, origin_attempt_id))
+                    if (
+                        observation := self._observation(
+                            value,
+                            pack,
+                            origin_attempt_id,
+                            recover_display_fields=bool(stage_contract),
+                        )
+                    )
                     is not None
                 )
             findings.extend(_schema_findings(error))
-            return self._result(
-                findings=findings,
-                accepted=(),
-                observations=observations,
-                candidate_fingerprint=raw_fingerprint,
-                policy_version=self.policy.validation_policy_version,
+            if not stage_contract:
+                return self._result(
+                    findings=findings,
+                    accepted=(),
+                    observations=observations,
+                    candidate_fingerprint=raw_fingerprint,
+                    policy_version=policy_version,
+                )
+            # Retain the complete envelope's schema failures while running safely
+            # recoverable claims through the SAME safety checks as valid output.
+            # _result never accepts assertions when any schema finding remains.
+            recovered_claims = tuple(
+                claim
+                for value in (claims if isinstance(claims, list | tuple) else ())
+                if (claim := self._recover_claim(value, recover_display_fields=True)) is not None
             )
+            structured = StructuredCandidate(
+                schema_version="ai-structured-output-v1",
+                action_type="RESEARCH_RECOMMENDATION",
+                claims=recovered_claims,
+            )
+        # Check recognizable envelope bindings even when another field failed
+        # schema validation. This path is shared by valid and invalid envelopes.
+        if stage_contract and isinstance(parsed, Mapping):
+            # Reference safety is independent of claim/schema completeness and
+            # must run before semantic guards can skip an otherwise typed claim.
+            raw_claims = parsed.get("claims")
+            if isinstance(raw_claims, list | tuple):
+                for raw_claim in raw_claims:
+                    if not isinstance(raw_claim, Mapping):
+                        continue
+                    for field in ("evidence_refs", "operand_refs"):
+                        findings.extend(_reference_safety_findings(raw_claim.get(field), pack))
+            analysis_type = parsed.get("analysis_type")
+            if (
+                expected_analysis_type
+                and isinstance(analysis_type, str)
+                and analysis_type != expected_analysis_type
+            ):
+                findings.append(
+                    _finding(
+                        ValidationLayer.SEMANTIC,
+                        "ANALYSIS_TYPE_MISMATCH",
+                        retryable=False,
+                        field_path="analysis_type",
+                    )
+                )
+            if stage_contract == STAGE2_CONTRACT_VERSION:
+                diagnosis_ref = parsed.get("diagnosis_ref")
+                if (
+                    expected_diagnosis_ref
+                    and isinstance(diagnosis_ref, str)
+                    and diagnosis_ref != expected_diagnosis_ref
+                ):
+                    findings.append(
+                        _finding(
+                            ValidationLayer.SEMANTIC,
+                            "DIAGNOSIS_REF_MISMATCH",
+                            retryable=False,
+                            field_path="diagnosis_ref",
+                        )
+                    )
+                findings.extend(_reference_safety_findings(parsed.get("evidence_refs"), pack))
 
         recommendations = {
             value
@@ -773,7 +945,7 @@ class ValidationService:
             accepted=accepted,
             observations=observations,
             candidate_fingerprint=raw_fingerprint,
-            policy_version=self.policy.validation_policy_version,
+            policy_version=policy_version,
         )
 
 

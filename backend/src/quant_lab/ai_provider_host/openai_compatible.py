@@ -12,6 +12,7 @@ import httpx
 from quant_lab.ai_provider_protocol import (
     CallPolicy,
     EndpointProfile,
+    ProviderAvailability,
     ProviderCallRequest,
     ProviderCallResult,
     ProviderCapabilities,
@@ -67,6 +68,24 @@ class OpenAICompatibleProvider:
     def health(self) -> ProviderHealth:
         return ProviderHealth(
             profile_id=self.profile.profile_id, endpoint_fingerprint=self.profile.fingerprint
+        )
+
+    def availability(self) -> ProviderAvailability:
+        # Profile validation happens at construction. Never resolve DNS or probe upstream here.
+        accessible = True
+        try:
+            available = self.secret_store.exists(self.profile.credential_ref)
+        except Exception:
+            # Native store errors can contain private details; only flags cross IPC.
+            accessible = False
+            available = False
+        return ProviderAvailability(
+            profile_id=self.profile.profile_id,
+            endpoint_fingerprint=self.profile.fingerprint,
+            host_ready=True,
+            profile_valid=True,
+            credential_store_accessible=accessible,
+            credential_available=available,
         )
 
     def complete(self, request: ProviderCallRequest) -> ProviderCallResult:

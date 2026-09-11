@@ -4,6 +4,7 @@ from typing import Protocol
 
 from quant_lab.ai_provider_protocol import (
     EndpointProfile,
+    ProviderAvailability,
     ProviderCallRequest,
     ProviderCallResult,
     ProviderCapabilities,
@@ -17,6 +18,7 @@ class Provider(Protocol):
     def capabilities(self) -> ProviderCapabilities: ...
     def complete(self, request: ProviderCallRequest) -> ProviderCallResult: ...
     def health(self) -> ProviderHealth: ...
+    def availability(self) -> ProviderAvailability: ...
 
 
 class FakeProvider:
@@ -52,6 +54,17 @@ class FakeProvider:
     def health(self) -> ProviderHealth:
         return ProviderHealth(
             profile_id=self.profile.profile_id, endpoint_fingerprint=self.profile.fingerprint
+        )
+
+    def availability(self) -> ProviderAvailability:
+        # Fake providers explicitly require no credential store or upstream credentials.
+        return ProviderAvailability(
+            profile_id=self.profile.profile_id,
+            endpoint_fingerprint=self.profile.fingerprint,
+            host_ready=True,
+            profile_valid=True,
+            credential_store_accessible=True,
+            credential_available=True,
         )
 
     def complete(self, request: ProviderCallRequest) -> ProviderCallResult:

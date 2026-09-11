@@ -272,13 +272,29 @@ class AIProvenanceService:
             completed_at=datetime.now(UTC),
         )
 
-    def recover_incomplete_runs(self, now_utc: datetime) -> tuple[str, ...]:
+    def recover_incomplete_runs(
+        self, now_utc: datetime, *, recover_analyses: bool = True
+    ) -> tuple[str, ...]:
+        from sqlalchemy import inspect
+
+        from quant_lab.ai.analysis_repository import AnalysisRepository
+
+        analyses = AnalysisRepository(self.repository.engine)
+        analysis_ids = analyses.run_ids()
+        if recover_analyses and inspect(self.repository.engine).has_table(
+            "ai_analysis_orchestrations"
+        ):
+            analyses.recover()
         recovered: list[str] = []
         # A user may have cancelled the run while a provider request was in flight.
         # Recover attempts independently; never reopen or mutate a terminal run.
         for attempt in self.repository.list_started_attempts():
+            if attempt.run_id in analysis_ids:
+                continue
             self.repository.abandon_provider_attempt(attempt.id, now_utc)
         for run in self.repository.list_incomplete_runs():
+            if run.id in analysis_ids:
+                continue
             self._update_run(
                 run.id,
                 status=AIAnalysisRunStatus.FAILED.value,

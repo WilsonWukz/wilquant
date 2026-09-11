@@ -14,7 +14,7 @@ from quant_lab.db.sqlite import create_sqlite_engine
 
 REVISION_0013 = "20260722_0013"
 REVISION_0014 = "20260827_0014"
-REVISION_HEAD = "20260910_0016"
+REVISION_HEAD = "20260911_0017"
 AI_TABLES = {
     "ai_prompt_template_versions",
     "ai_model_config_versions",

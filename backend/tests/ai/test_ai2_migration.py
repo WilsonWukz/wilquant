@@ -144,7 +144,7 @@ def _seed_case_and_ai2_rows(engine) -> None:
 def test_ai2_revision_is_the_single_linear_head() -> None:
     config = Config("backend/alembic.ini")
     script = ScriptDirectory.from_config(config)
-    assert script.get_heads() == ["20260910_0016"]
+    assert script.get_heads() == ["20260911_0017"]
     assert script.get_revision(REVISION_0015).down_revision == REVISION_0014
 
 
@@ -155,14 +155,11 @@ def test_upgrade_creates_four_history_tables_and_derived_fts(
     assert set(inspect(engine).get_table_names()) >= HISTORY_TABLES
     with engine.connect() as connection:
         sql = connection.scalar(
-            text(
-                "SELECT sql FROM sqlite_master WHERE type='table' "
-                "AND name='ai_research_case_fts'"
-            )
+            text("SELECT sql FROM sqlite_master WHERE type='table' AND name='ai_research_case_fts'")
         )
         assert "VIRTUAL TABLE" in sql.upper()
         assert "fts5" in sql.lower()
-        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260910_0016"
+        assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "20260911_0017"
     engine.dispose()
 
 
@@ -180,9 +177,7 @@ def test_history_rows_are_append_only_but_fts_is_disposable(
     }
     for table_name, row_id in rows.items():
         with pytest.raises(sa.exc.IntegrityError), engine.begin() as connection:
-            connection.execute(
-                text(f"UPDATE {table_name} SET id=id WHERE id=:id"), {"id": row_id}
-            )
+            connection.execute(text(f"UPDATE {table_name} SET id=id WHERE id=:id"), {"id": row_id})
         with pytest.raises(sa.exc.IntegrityError), engine.begin() as connection:
             connection.execute(text(f"DELETE FROM {table_name} WHERE id=:id"), {"id": row_id})
 
@@ -192,16 +187,17 @@ def test_history_rows_are_append_only_but_fts_is_disposable(
     engine.dispose()
 
 
-def test_ai2_downgrade_upgrade_matrix(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_ai2_downgrade_upgrade_matrix(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config, engine = _context(tmp_path, monkeypatch)
     command.downgrade(config, REVISION_0014)
     assert HISTORY_TABLES.isdisjoint(set(inspect(engine).get_table_names()))
     with engine.connect() as connection:
-        assert connection.scalar(
-            text("SELECT name FROM sqlite_master WHERE name='ai_research_case_fts'")
-        ) is None
+        assert (
+            connection.scalar(
+                text("SELECT name FROM sqlite_master WHERE name='ai_research_case_fts'")
+            )
+            is None
+        )
     command.upgrade(config, "head")
     assert set(inspect(engine).get_table_names()) >= HISTORY_TABLES
     engine.dispose()

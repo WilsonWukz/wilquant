@@ -146,6 +146,12 @@ class AIAnalysisAttemptModel(Base):
         ForeignKey("ai_analysis_runs.id", ondelete="RESTRICT"), nullable=False
     )
     attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    stage: Mapped[str | None] = mapped_column(String(32))
+    parent_attempt_id: Mapped[str | None] = mapped_column(
+        ForeignKey("ai_analysis_attempts.id", ondelete="RESTRICT")
+    )
+    retry_reason_codes_json: Mapped[str | None] = mapped_column(Text)
+    validation_feedback_fingerprint: Mapped[str | None] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(32), nullable=False)
     provider_request_id: Mapped[str | None] = mapped_column(String(255))
     input_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)

@@ -20,6 +20,9 @@ FORBIDDEN_IMPORTS = (
 )
 READ_ONLY_DOMAIN_IMPORTS = {
     ("source_resolvers.py", "quant_lab.paper.repository"),
+    # AI-4's explicitly wired resolver relationship check is SELECT-only;
+    # test_analysis_relationships also verifies that no SQL mutation is issued.
+    ("analysis_relationships.py", "quant_lab.paper.models"),
 }
 
 

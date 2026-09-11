@@ -11,6 +11,10 @@ from uuid import uuid4
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
+from quant_lab.ai.analysis_persistence import (
+    AIAnalysisOrchestrationModel,
+    AIAnalysisStageBindingModel,
+)
 from quant_lab.ai.configuration import contains_forbidden_secret_material
 from quant_lab.ai.fingerprints import fingerprint_payload
 from quant_lab.ai.persistence import (
@@ -100,14 +104,79 @@ class AIProviderExecutionService:
             if run is None or run.status not in {"RUNNING", "VALIDATING"}:
                 raise ValueError("AI_RUN_NOT_DISPATCHABLE")
             model = session.get(AIModelConfigVersionModel, run.model_config_version_id)
-            prompt = session.get(AIPromptTemplateVersionModel, run.prompt_template_version_id)
+            stage_binding = (
+                session.get(AIAnalysisStageBindingModel, attempt.id) if attempt.stage else None
+            )
+            stage_inputs = json.loads(stage_binding.binding_json) if stage_binding else None
+            if attempt.stage:
+                analysis = session.get(AIAnalysisOrchestrationModel, run.id)
+                if (
+                    stage_inputs is None
+                    or analysis is None
+                    or stage_binding is None
+                    or analysis.active_epoch_id != stage_binding.epoch_id
+                    or fingerprint_payload(stage_inputs) != stage_binding.fingerprint
+                    or attempt.input_fingerprint != stage_binding.fingerprint
+                    or stage_inputs["stage"] != attempt.stage
+                    or stage_inputs["evidence_pack_fingerprint"]
+                    != context.evidence_pack_fingerprint
+                    or stage_inputs["request_fingerprint"] != analysis.request_fingerprint
+                    or stage_inputs["model_config_fingerprint"] != run.model_config_fingerprint
+                ):
+                    raise ValueError("AI_PROVIDER_AUTHORIZATION_INVALID")
+                frozen = json.loads(analysis.context_json)
+                stage_index = 0 if attempt.stage == "STAGE_1_DIAGNOSIS" else 1
+                if (
+                    frozen["preflight_gate"]["decision"] != "PROCEED"
+                    or frozen["evidence_pack_id"] != context.evidence_pack_id
+                    or frozen["evidence_pack_fingerprint"] != context.evidence_pack_fingerprint
+                    or stage_inputs["resolved_analysis_input_fingerprint"]
+                    != frozen["resolved_analysis_input_fingerprint"]
+                    or stage_inputs["retrieval_snapshot_fingerprint"]
+                    != frozen["retrieval_snapshot_fingerprint"]
+                    or stage_inputs["prompt_template_version_id"]
+                    != frozen["template_ids"][stage_index]
+                    or stage_inputs["stage_contract_version"]
+                    != frozen["stage1_contract" if stage_index == 0 else "stage2_contract"]
+                ):
+                    raise ValueError("AI_PROVIDER_AUTHORIZATION_INVALID")
+                if stage_index == 1:
+                    diagnosis = json.loads(analysis.diagnosis_json or "null")
+                    gate = json.loads(analysis.gate_json or "null")
+                    if (
+                        diagnosis is None
+                        or gate is None
+                        or gate["decision"] != "PROCEED"
+                        or stage_inputs["diagnosis_fingerprint"] != diagnosis["fingerprint"]
+                    ):
+                        raise ValueError("AI_PROVIDER_AUTHORIZATION_INVALID")
+                elif analysis.diagnosis_json is not None:
+                    raise ValueError("AI_PROVIDER_AUTHORIZATION_INVALID")
+                actual_gate = (
+                    json.loads(analysis.gate_json or "null")
+                    if stage_index == 1
+                    else frozen["preflight_gate"]
+                )
+                if context.gate_fingerprint != fingerprint_payload(actual_gate):
+                    raise ValueError("AI_PROVIDER_AUTHORIZATION_INVALID")
+            prompt = session.get(
+                AIPromptTemplateVersionModel,
+                stage_inputs["prompt_template_version_id"]
+                if stage_inputs
+                else run.prompt_template_version_id,
+            )
             pack = session.get(AIEvidencePackModel, context.evidence_pack_id)
             if (
                 model is None
                 or prompt is None
                 or pack is None
                 or model.fingerprint != run.model_config_fingerprint
-                or prompt.fingerprint != run.prompt_template_fingerprint
+                or prompt.fingerprint
+                != (
+                    stage_inputs["prompt_template_fingerprint"]
+                    if stage_inputs
+                    else run.prompt_template_fingerprint
+                )
                 or pack.case_id != run.case_id
                 or pack.fingerprint != context.evidence_pack_fingerprint
                 or context.gate_decision != "PROCEED"
@@ -115,7 +184,12 @@ class AIProviderExecutionService:
             ):
                 raise ValueError("AI_PROVIDER_AUTHORIZATION_INVALID")
             serialized_messages = [message.model_dump(mode="json") for message in messages]
-            if fingerprint_payload(serialized_messages) != run.resolved_prompt_fingerprint:
+            rendered_fingerprint = (
+                stage_inputs["rendered_prompt_fingerprint"]
+                if stage_inputs
+                else run.resolved_prompt_fingerprint
+            )
+            if fingerprint_payload(serialized_messages) != rendered_fingerprint:
                 raise ValueError("AI_PROMPT_FINGERPRINT_MISMATCH")
             if contains_forbidden_secret_material(serialized_messages):
                 raise ValueError("AI_PROMPT_SECRET_FORBIDDEN")
@@ -168,7 +242,8 @@ class AIProviderExecutionService:
                 "endpoint_fingerprint": profile.fingerprint,
                 "model_config_fingerprint": model.fingerprint,
                 "prompt_fingerprint": prompt.fingerprint,
-                "resolved_prompt_fingerprint": run.resolved_prompt_fingerprint,
+                "resolved_prompt_fingerprint": rendered_fingerprint,
+                "stage_binding_fingerprint": stage_binding.fingerprint if stage_binding else None,
                 "evidence_pack_id": pack.id,
                 "evidence_pack_fingerprint": pack.fingerprint,
                 "gate_fingerprint": context.gate_fingerprint,

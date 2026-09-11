@@ -121,6 +121,7 @@ def create_app(
             elif request.method == "GET" and request.url.path in {
                 "/internal/v1/health",
                 "/internal/v1/capabilities",
+                "/internal/v1/availability",
             }:
                 identity = request.headers.get("x-request-id", "")
                 if not identity or len(identity) > 128:
@@ -137,6 +138,9 @@ def create_app(
                         "endpoint_fingerprint": profile.fingerprint,
                         "provider_health": provider.health().model_dump(mode="json"),
                     }
+                elif request.url.path.endswith("availability"):
+                    availability = await run_in_threadpool(provider.availability)
+                    payload = availability.model_dump(mode="json")
                 else:
                     payload = provider.capabilities().model_dump(mode="json")
             else:

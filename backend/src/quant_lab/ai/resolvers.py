@@ -40,6 +40,16 @@ class TemporalMetadataUnavailable(EvidenceResolverError):
     pass
 
 
+class PaperRelationshipError(EvidenceResolverError):
+    code = "ANALYSIS_PAPER_SOURCE_RELATIONSHIP_INVALID"
+
+    def __init__(self) -> None:
+        super().__init__(self.code)
+
+
+PaperRelationshipValidator = Callable[[str, tuple[str, ...], tuple[str, ...]], None]
+
+
 class EvidenceRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -186,8 +196,24 @@ class ExplicitSnapshotResolver:
 
 
 class EvidenceResolverRegistry:
-    def __init__(self) -> None:
+    def __init__(
+        self, *, paper_relationship_validator: PaperRelationshipValidator | None = None
+    ) -> None:
         self._resolvers: dict[EvidenceSourceType, EvidenceResolver] = {}
+        self._paper_relationship_validator = paper_relationship_validator
+
+    def validate_paper_relationships(
+        self,
+        *,
+        paper_session_id: str,
+        paper_account_snapshot_ids: tuple[str, ...],
+        risk_decision_ids: tuple[str, ...],
+    ) -> None:
+        if not paper_session_id or self._paper_relationship_validator is None:
+            raise PaperRelationshipError()
+        self._paper_relationship_validator(
+            paper_session_id, paper_account_snapshot_ids, risk_decision_ids
+        )
 
     def register(self, resolver: EvidenceResolver) -> None:
         if resolver.source_type in self._resolvers:

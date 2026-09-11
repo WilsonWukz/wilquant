@@ -144,6 +144,18 @@ class ProviderHealth(Contract):
     endpoint_fingerprint: str
 
 
+class ProviderAvailability(Contract):
+    """Local readiness only; makes no claim about upstream authentication or health."""
+
+    protocol_version: Literal["1"] = "1"
+    profile_id: str = Field(min_length=1, max_length=128)
+    endpoint_fingerprint: str = Field(min_length=1, max_length=128)
+    host_ready: bool = Field(strict=True)
+    profile_valid: bool = Field(strict=True)
+    credential_store_accessible: bool = Field(strict=True)
+    credential_available: bool = Field(strict=True)
+
+
 class ProviderFailure(Exception):
     def __init__(
         self, code: str, safe_message: str = "Provider call failed", outcome_unknown: bool = False

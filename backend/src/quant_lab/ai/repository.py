@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from typing import TypeVar
 from uuid import uuid4
 
 from sqlalchemy import func, select, text, true
@@ -24,12 +25,58 @@ from quant_lab.ai.persistence import (
     AIValidationResultModel,
 )
 
+ImmutableInput = TypeVar(
+    "ImmutableInput",
+    AIPromptTemplateVersionModel,
+    AIResearchCaseModel,
+    AIEvidencePackModel,
+    AIRetrievalSnapshotModel,
+)
+
 
 class AIRepository:
     """SQLite persistence boundary for AI provenance records."""
 
-    def __init__(self, engine: Engine) -> None:
+    def __init__(self, engine: Engine, *, serialize_immutable_creation: bool = False) -> None:
         self.engine = engine
+        self.serialize_immutable_creation = serialize_immutable_creation
+
+    def _existing_input(self, session: Session, model: ImmutableInput) -> ImmutableInput | None:
+        if not self.serialize_immutable_creation:
+            return None
+        session.execute(text("BEGIN IMMEDIATE"))
+        kind = type(model)
+        existing = session.scalar(select(kind).where(kind.fingerprint == model.fingerprint))
+        if existing is not None:
+            session.expunge(existing)
+        return existing
+
+    def list_case_evidence_packs(
+        self, case_id: str, limit: int = 20
+    ) -> tuple[AIEvidencePackModel, ...]:
+        with Session(self.engine) as session:
+            rows = tuple(
+                session.scalars(
+                    select(AIEvidencePackModel)
+                    .where(AIEvidencePackModel.case_id == case_id)
+                    .order_by(AIEvidencePackModel.created_at, AIEvidencePackModel.id)
+                    .limit(limit)
+                )
+            )
+            session.expunge_all()
+            return rows
+
+    def list_attempts(self, run_id: str) -> tuple[AIAnalysisAttemptModel, ...]:
+        with Session(self.engine) as session:
+            rows = tuple(
+                session.scalars(
+                    select(AIAnalysisAttemptModel)
+                    .where(AIAnalysisAttemptModel.run_id == run_id)
+                    .order_by(AIAnalysisAttemptModel.attempt_number)
+                )
+            )
+            session.expunge_all()
+            return rows
 
     def abandon_provider_attempt(self, attempt_id: str, now_utc: datetime) -> None:
         """Atomically retain unknown usage on restart; never release the binding reservation."""
@@ -84,6 +131,9 @@ class AIRepository:
         self, model: AIPromptTemplateVersionModel
     ) -> AIPromptTemplateVersionModel:
         with Session(self.engine) as session:
+            existing = self._existing_input(session, model)
+            if existing is not None:
+                return existing
             session.add(model)
             session.commit()
             session.refresh(model)
@@ -136,6 +186,9 @@ class AIRepository:
 
     def add_research_case(self, model: AIResearchCaseModel) -> AIResearchCaseModel:
         with Session(self.engine) as session:
+            existing = self._existing_input(session, model)
+            if existing is not None:
+                return existing
             session.add(model)
             session.commit()
             session.refresh(model)
@@ -324,6 +377,9 @@ class AIRepository:
 
     def add_evidence_pack(self, model: AIEvidencePackModel) -> AIEvidencePackModel:
         with Session(self.engine) as session:
+            existing = self._existing_input(session, model)
+            if existing is not None:
+                return existing
             session.add(model)
             session.commit()
             session.refresh(model)
@@ -509,6 +565,9 @@ class AIRepository:
 
     def add_retrieval_snapshot(self, model: AIRetrievalSnapshotModel) -> AIRetrievalSnapshotModel:
         with Session(self.engine) as session:
+            existing = self._existing_input(session, model)
+            if existing is not None:
+                return existing
             session.add(model)
             session.commit()
             session.refresh(model)

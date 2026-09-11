@@ -5,6 +5,7 @@ from logging.config import fileConfig
 from sqlalchemy import engine_from_config, pool
 
 from alembic import context
+from quant_lab.ai import analysis_persistence as ai_analysis_persistence  # noqa: F401
 from quant_lab.ai import persistence as ai_persistence  # noqa: F401
 from quant_lab.backtest import strategy_library  # noqa: F401
 from quant_lab.core.config import Settings

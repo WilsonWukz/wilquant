@@ -78,9 +78,7 @@ def test_ledger_entry_immutable(engine):
         )
         session.commit()
     with Session(engine) as session, pytest.raises(sa.exc.IntegrityError):
-        session.execute(
-            text("UPDATE paper_ledger_entries SET cash_delta = 200 WHERE id = 'l1'")
-        )
+        session.execute(text("UPDATE paper_ledger_entries SET cash_delta = 200 WHERE id = 'l1'"))
 
 
 def test_risk_policy_version_immutable(engine):
@@ -105,16 +103,14 @@ def test_risk_policy_version_immutable(engine):
         )
         session.commit()
     with Session(engine) as session, pytest.raises(sa.exc.IntegrityError):
-        session.execute(
-            text("DELETE FROM paper_risk_policy_versions WHERE id = 'rpv1'")
-        )
+        session.execute(text("DELETE FROM paper_risk_policy_versions WHERE id = 'rpv1'"))
 
 
 REVISION_0010 = "20260722_0010"
 REVISION_0011 = "20260722_0011"
 REVISION_0012 = "20260722_0012"
 REVISION_0013 = "20260722_0013"
-REVISION_HEAD = "20260910_0016"
+REVISION_HEAD = "20260911_0017"
 SESSION_0013_COLUMNS = {
     "replay_start_date",
     "replay_end_date",
@@ -140,9 +136,10 @@ def test_empty_database_upgrades_to_0013_head(tmp_path: Path, monkeypatch) -> No
     command.upgrade(Config("backend/alembic.ini"), "head")
     engine = create_sqlite_engine(settings)
     with engine.connect() as connection:
-        assert connection.execute(
-            text("SELECT version_num FROM alembic_version")
-        ).scalar_one() == REVISION_HEAD
+        assert (
+            connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+            == REVISION_HEAD
+        )
     assert _column_names(engine, "paper_sessions") >= SESSION_0013_COLUMNS
     engine.dispose()
 
@@ -161,9 +158,10 @@ def test_head_upgrade_is_idempotent(tmp_path: Path, monkeypatch) -> None:
     command.upgrade(config, "head")
     engine = create_sqlite_engine(settings)
     with engine.connect() as connection:
-        assert connection.execute(
-            text("SELECT version_num FROM alembic_version")
-        ).scalar_one() == REVISION_HEAD
+        assert (
+            connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+            == REVISION_HEAD
+        )
     engine.dispose()
 
 
@@ -178,20 +176,20 @@ def test_prior_paper_revision_upgrades_to_head(
     command.upgrade(config, starting_revision)
     engine = create_sqlite_engine(settings)
     with engine.connect() as connection:
-        assert connection.execute(
-            text("SELECT version_num FROM alembic_version")
-        ).scalar_one() == starting_revision
+        assert (
+            connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+            == starting_revision
+        )
     command.upgrade(config, "head")
     with engine.connect() as connection:
-        assert connection.execute(
-            text("SELECT version_num FROM alembic_version")
-        ).scalar_one() == REVISION_HEAD
+        assert (
+            connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+            == REVISION_HEAD
+        )
     engine.dispose()
 
 
-def test_0013_downgrades_to_0012_and_upgrades_again(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_0013_downgrades_to_0012_and_upgrades_again(tmp_path: Path, monkeypatch) -> None:
     settings = Settings(project_root=tmp_path, runtime_root=tmp_path / "runtime")
     monkeypatch.setenv("QUANT_LAB_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setenv("QUANT_LAB_RUNTIME_ROOT", str(settings.runtime_root))
@@ -200,16 +198,16 @@ def test_0013_downgrades_to_0012_and_upgrades_again(
     engine = create_sqlite_engine(settings)
     command.downgrade(config, REVISION_0012)
     with engine.connect() as connection:
-        assert connection.execute(
-            text("SELECT version_num FROM alembic_version")
-        ).scalar_one() == REVISION_0012
+        assert (
+            connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+            == REVISION_0012
+        )
     assert SESSION_0013_COLUMNS.isdisjoint(_column_names(engine, "paper_sessions"))
-    assert ADVANCE_0013_COLUMNS.isdisjoint(
-        _column_names(engine, "paper_session_advances")
-    )
+    assert ADVANCE_0013_COLUMNS.isdisjoint(_column_names(engine, "paper_session_advances"))
     command.upgrade(config, "head")
     with engine.connect() as connection:
-        assert connection.execute(
-            text("SELECT version_num FROM alembic_version")
-        ).scalar_one() == REVISION_HEAD
+        assert (
+            connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+            == REVISION_HEAD
+        )
     engine.dispose()

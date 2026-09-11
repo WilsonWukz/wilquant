@@ -4,12 +4,14 @@ import json
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time
+from functools import partial
 from pathlib import Path
 from typing import TypedDict, cast
 
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
+from quant_lab.ai.analysis_relationships import validate_paper_relationships
 from quant_lab.ai.contracts import (
     AssetType,
     EvidenceClassification,
@@ -24,6 +26,7 @@ from quant_lab.ai.resolvers import (
     EvidenceResolverRegistry,
     EvidenceSourceNotFound,
     ExplicitSnapshotResolver,
+    PaperRelationshipValidator,
     SourceLoader,
     SourceSnapshot,
     TemporalMetadataUnavailable,
@@ -297,8 +300,10 @@ SUPPORTED_SOURCE_POLICIES: Mapping[EvidenceSourceType, SourceFieldPolicy] = {
 
 def build_supported_resolver_registry(
     loaders: Mapping[EvidenceSourceType, SourceLoader],
+    *,
+    paper_relationship_validator: PaperRelationshipValidator | None = None,
 ) -> EvidenceResolverRegistry:
-    registry = EvidenceResolverRegistry()
+    registry = EvidenceResolverRegistry(paper_relationship_validator=paper_relationship_validator)
     for source_type, loader in loaders.items():
         policy = SUPPORTED_SOURCE_POLICIES.get(source_type)
         if policy is None:
@@ -884,5 +889,6 @@ def build_domain_resolver_registry(
             EvidenceSourceType.PAPER_SESSION: loaders.paper_session,
             EvidenceSourceType.PAPER_ACCOUNT_SNAPSHOT: loaders.paper_account_snapshot,
             EvidenceSourceType.RISK_DECISION: loaders.risk_decision,
-        }
+        },
+        paper_relationship_validator=partial(validate_paper_relationships, engine),
     )

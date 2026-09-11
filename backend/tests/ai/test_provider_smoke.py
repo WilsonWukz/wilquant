@@ -59,7 +59,7 @@ def test_smoke_database_isolated_from_inherited_configuration(tmp_path, monkeypa
         with repository.engine.connect() as connection:
             assert (
                 connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
-                == "20260910_0016"
+                == "20260911_0017"
             )
         raise StopBeforeProvider
 
